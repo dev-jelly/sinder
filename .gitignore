@@ -1,0 +1,25 @@
+node_modules/
+dist/
+dist-electron/
+release/
+test-results/
+playwright-report/
+.DS_Store
+.sinder-dev/
+
+# Local credentials and private publication backups
+.env
+.env.*
+!.env.example
+!.env.*.example
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+*.bundle
+
+# Native test captures can contain local paths or connection details
+docs/screenshots/ssh-split.png
+docs/screenshots/remote-edit-conflict.png
+docs/screenshots/remote-edit-saved.png

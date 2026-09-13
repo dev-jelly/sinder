@@ -1,0 +1,71 @@
+{
+  "name": "sinder",
+  "version": "0.4.0",
+  "private": true,
+  "description": "A calm desktop file explorer for local files and SSH workspaces",
+  "author": "Sinder",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs",
+    "start": "electron .",
+    "test": "tsx --test tests/*.test.ts",
+    "test:e2e": "npm run build && playwright test",
+    "package": "npm run build && electron-builder --mac dir"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ssh2": "^1.15.5",
+    "@vitejs/plugin-react": "^6.0.0",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.0"
+  },
+  "build": {
+    "appId": "app.sinder.desktop",
+    "productName": "Sinder",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "!**/node_modules/cpu-features/**"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dir"
+      ],
+      "icon": "assets/icon.icns",
+      "identity": "-"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "npmRebuild": false
+  }
+}
