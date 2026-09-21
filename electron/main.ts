@@ -1,5 +1,21 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  shell,
+  nativeImage,
+  type NativeImage,
+  type IpcMainInvokeEvent,
+} from "electron";
 import path from "node:path";
+import { existsSync, lstatSync } from "node:fs";
+import {
+  ExternalFiles,
+  documentExtensions,
+  textExtensions,
+} from "./external-files.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
@@ -10,18 +26,56 @@ import { Connections } from "./connections.js";
 import { Transfers } from "./transfers.js";
 import { RemoteEdits } from "./remote-edits.js";
 import { exists, protectRoot, validName } from "./providers.js";
-import { editActions, type Result } from "../shared/types.js";
+import {
+  editActions,
+  type Result,
+  type Location,
+  type FileClipboard,
+} from "../shared/types.js";
 import { preview } from "./preview.js";
+import {
+  startFilePromises,
+  activeFilePromises,
+  waitForFilePromises,
+} from "./file-promises.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const documentPath = path.join(dirname, "../../dist/index.html");
 const appUrl = pathToFileURL(documentPath).href;
+const dragIcon = nativeImage
+  .createFromPath(path.join(dirname, "../../assets/icon.png"))
+  .resize({ width: 32, height: 32 });
 if (!app.isPackaged && process.env.SINDER_DATA_DIR)
   app.setPath("userData", process.env.SINDER_DATA_DIR);
 app.setName("Sinder");
 const primaryInstance = app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
-let window: BrowserWindow;
+const windows = new Set<BrowserWindow>();
+const windowOptions = new Map<
+  number,
+  { initialLocation?: Location; restoreWorkspace: boolean }
+>();
+let createWindow: (location?: Location) => Promise<void>;
+let clipboard: FileClipboard | null = null;
+let closing = false;
+const dragExports = new Map<
+  string,
+  { owner: number; files: string[]; icon: NativeImage }
+>();
+const focusedWindow = () => BrowserWindow.getFocusedWindow() ?? [...windows][0];
+const trusted = (event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  return owner &&
+    windows.has(owner) &&
+    event.senderFrame === event.sender.mainFrame &&
+    event.senderFrame.url === appUrl
+    ? owner
+    : undefined;
+};
+const emit = (channel: string, payload: unknown) => {
+  for (const window of windows)
+    if (!window.isDestroyed()) window.webContents.send(channel, payload);
+};
 let connections: Connections;
 let transfers: Transfers;
 let edits: RemoteEdits;
@@ -63,17 +117,13 @@ const stringId = z.string().min(1).max(200);
 function handle<T extends z.ZodType>(
   name: string,
   schema: T,
-  handler: (args: z.infer<T>) => unknown,
+  handler: (args: z.infer<T>, window: BrowserWindow) => unknown,
 ) {
   ipcMain.handle(name, async (event, raw): Promise<Result<unknown>> => {
-    if (
-      event.sender !== window.webContents ||
-      event.senderFrame !== window.webContents.mainFrame ||
-      event.senderFrame.url !== appUrl
-    )
-      return { ok: false, error: "허용되지 않은 요청입니다." };
+    const window = trusted(event);
+    if (!window) return { ok: false, error: "허용되지 않은 요청입니다." };
     try {
-      return { ok: true, value: await handler(schema.parse(raw)) };
+      return { ok: true, value: await handler(schema.parse(raw), window) };
     } catch (error) {
       return {
         ok: false,
@@ -89,7 +139,8 @@ function handle<T extends z.ZodType>(
 }
 
 app.on("second-instance", () => {
-  if (window && !window.isDestroyed()) {
+  const window = focusedWindow();
+  if (window) {
     if (window.isMinimized()) window.restore();
     window.show();
     window.focus();
@@ -106,7 +157,7 @@ if (primaryInstance)
       connections = new Connections(
         store,
         async (profile, fingerprint) => {
-          const result = await dialog.showMessageBox(window, {
+          const result = await dialog.showMessageBox(focusedWindow(), {
             type: "question",
             title: "SSH 서버 확인",
             message: `${profile.host}:${profile.port}에 처음 연결합니다.`,
@@ -121,33 +172,23 @@ if (primaryInstance)
         !app.isPackaged ? process.env.SINDER_HOME : undefined,
       );
       transfers = new Transfers(connections);
-      window = new BrowserWindow({
-        width: 1360,
-        height: 880,
-        minWidth: 860,
-        minHeight: 580,
-        title: "Sinder",
-        backgroundColor: "#f7f8fa",
-        titleBarStyle:
-          process.platform === "darwin" ? "hiddenInset" : "default",
-        trafficLightPosition: { x: 20, y: 22 },
-        vibrancy: "sidebar",
-        visualEffectState: "active",
-        webPreferences: {
-          preload: path.join(dirname, "preload.cjs"),
-          contextIsolation: true,
-          sandbox: true,
-          nodeIntegration: false,
-          webSecurity: true,
-        },
-      });
-      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-      window.webContents.on("will-navigate", (event) => event.preventDefault());
-      const emit = (channel: string, payload: unknown) => {
-        if (!window.isDestroyed()) window.webContents.send(channel, payload);
-      };
       connections.on("change", (data) => emit("connections:changed", data));
-      transfers.on("change", (data) => emit("transfers:changed", data));
+      const completedMoves = new Set<string>();
+      transfers.on("change", (data) => {
+        emit("transfers:changed", data);
+        for (const job of data as import("../shared/types.js").Transfer[]) {
+          if (job.status !== "done" || !job.move || completedMoves.has(job.id))
+            continue;
+          completedMoves.add(job.id);
+          if (
+            clipboard?.move &&
+            JSON.stringify(job.source) === JSON.stringify(clipboard.source)
+          ) {
+            clipboard = null;
+            emit("clipboard:changed", null);
+          }
+        }
+      });
       const launchEditor = async (filename: string) => {
         const editor =
           store.data.editorPath ??
@@ -189,7 +230,9 @@ if (primaryInstance)
       );
       await edits.init();
 
-      handle("bootstrap", z.undefined(), () => ({
+      handle("bootstrap", z.undefined(), (_args, window) => ({
+        ...windowOptions.get(window.id),
+        clipboard,
         connections: connections.list(),
         profiles: store.data.profiles,
         bookmarks: store.data.bookmarks,
@@ -234,7 +277,7 @@ if (primaryInstance)
       handle(
         "files:trash",
         z.array(locationSchema).min(1).max(10000),
-        async (locations) => {
+        async (locations, window) => {
           if (locations.some((l) => l.connectionId !== "local")) {
             const result = await dialog.showMessageBox(window, {
               type: "question",
@@ -280,13 +323,184 @@ if (primaryInstance)
         const p = connections.resolve(location.connectionId, location.path);
         return preview(provider, p);
       });
+      const externalFiles = new ExternalFiles(
+        connections,
+        transfers,
+        path.join(app.getPath("userData"), "external-files"),
+      );
+      handle("window:new", locationSchema.optional(), async (location) => {
+        if (closing) throw new Error("종료 준비 중입니다.");
+        await createWindow(location);
+      });
+      handle("window:close", z.undefined(), (_args, window) => {
+        setImmediate(() => {
+          if (!window.isDestroyed()) window.close();
+        });
+      });
+      handle(
+        "clipboard:set",
+        z
+          .object({
+            source: z.array(locationSchema).min(1).max(10000),
+            move: z.boolean(),
+          })
+          .nullable(),
+        (value) => {
+          clipboard = value;
+          emit("clipboard:changed", value);
+        },
+      );
+      handle(
+        "files:prepare-export",
+        z.array(locationSchema).min(1).max(1000),
+        async (source, window) => {
+          const files = await externalFiles.prepare(source);
+          if (window.isDestroyed()) throw new Error("창이 닫혔습니다.");
+          const id = randomUUID();
+          // Only the latest prepared selection belongs to this window.
+          for (const [key, value] of dragExports)
+            if (value.owner === window.id) dragExports.delete(key);
+          dragExports.set(id, { owner: window.id, files, icon: dragIcon });
+          return { id, names: files.map((file) => path.basename(file)) };
+        },
+      );
+      ipcMain.on("files:drag-remote", (event, raw) => {
+        const window = trusted(event);
+        if (!window) return;
+        const report = (message: string) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send("files:drag-error", message);
+        };
+        try {
+          const entries = z
+            .array(
+              z.object({ location: locationSchema, directory: z.boolean() }),
+            )
+            .min(1)
+            .max(1000)
+            .parse(raw);
+          const source = entries.map(({ location }) => location);
+          const items = entries.map(({ location, directory }) => {
+            const provider = connections.get(location.connectionId);
+            const absolute = connections.resolve(
+              location.connectionId,
+              location.path,
+            );
+            return { name: provider.paths.basename(absolute), directory };
+          });
+          const downloads = new Map<number, Promise<string>>();
+          startFilePromises(
+            window,
+            items,
+            `SinderFiles:${JSON.stringify(source)}`,
+            (index) => {
+              if (!source[index])
+                return Promise.reject(new Error("알 수 없는 파일 요청입니다."));
+              let download = downloads.get(index);
+              if (!download) {
+                download = externalFiles
+                  .prepare([source[index]])
+                  .then((files) => files[0]);
+                downloads.set(index, download);
+              }
+              return download;
+            },
+            report,
+          );
+        } catch (error) {
+          report(error instanceof Error ? error.message : String(error));
+        }
+      });
+      ipcMain.on("files:drag-local", (event, raw) => {
+        if (!trusted(event)) return;
+        try {
+          const files = z
+            .array(
+              z
+                .string()
+                .min(1)
+                .max(32768)
+                .refine((p) => path.isAbsolute(p) && !p.includes("\0")),
+            )
+            .min(1)
+            .max(1000)
+            .parse(raw);
+          for (const file of files) {
+            const info = lstatSync(file);
+            if (!info.isFile() && !info.isDirectory())
+              throw new Error(
+                "일반 파일과 폴더만 외부로 드래그할 수 있습니다.",
+              );
+          }
+          event.sender.startDrag({
+            file: files[0],
+            files,
+            icon: dragIcon,
+          });
+        } catch (error) {
+          event.sender.send(
+            "files:drag-error",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      });
+      ipcMain.on("files:start-drag", (event, id) => {
+        const window = trusted(event);
+        if (!window) return;
+        try {
+          const prepared =
+            typeof id === "string" ? dragExports.get(id) : undefined;
+          if (
+            !prepared ||
+            prepared.owner !== window.id ||
+            !prepared.files.every(existsSync)
+          )
+            throw new Error("드래그할 파일을 다시 준비해 주세요.");
+          event.sender.startDrag({
+            file: prepared.files[0],
+            files: prepared.files,
+            icon: prepared.icon,
+          });
+        } catch (error) {
+          event.sender.send(
+            "files:drag-error",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      });
       handle("files:open", locationSchema, async (location) => {
-        if (location.connectionId !== "local")
-          throw new Error("원격 파일은 로컬로 복사한 후 열어 주세요.");
-        const error = await shell.openPath(
-          connections.resolve("local", location.path),
+        if (location.connectionId === "local") {
+          const error = await shell.openPath(
+            connections.resolve("local", location.path),
+          );
+          if (error) throw new Error(error);
+          return { kind: "local" };
+        }
+        const provider = connections.get(location.connectionId);
+        const absolute = connections.resolve(
+          location.connectionId,
+          location.path,
         );
+        const info = await provider.stat(absolute);
+        if (info.kind !== "file")
+          throw new Error("일반 파일만 외부 앱에서 열 수 있습니다.");
+        const extension = path.posix.extname(absolute).toLowerCase();
+        if (
+          textExtensions.has(extension) ||
+          !extension ||
+          path.posix.basename(absolute).startsWith(".")
+        ) {
+          await edits.open(location);
+          return { kind: "edit" };
+        }
+        if (!documentExtensions.has(extension))
+          throw new Error(
+            "이 형식은 실행 방지를 위해 바로 열지 않습니다. 미리보기 또는 로컬로 다운로드를 사용하세요.",
+          );
+        const [filename] = await externalFiles.prepare([location]);
+        const error = await shell.openPath(filename);
         if (error) throw new Error(error);
+        return { kind: "copy", localPath: filename };
       });
       handle("files:reveal", locationSchema, (location) => {
         if (location.connectionId !== "local")
@@ -317,14 +531,14 @@ if (primaryInstance)
       handle("connections:remove", stringId, (id) =>
         connections.removeProfile(id),
       );
-      handle("dialog:key", z.undefined(), async () => {
+      handle("dialog:key", z.undefined(), async (_args, window) => {
         const result = await dialog.showOpenDialog(window, {
           title: "SSH 비공개 키 선택",
           properties: ["openFile", "showHiddenFiles"],
         });
         return result.filePaths[0] ?? null;
       });
-      handle("dialog:folder", z.undefined(), async () => {
+      handle("dialog:folder", z.undefined(), async (_args, window) => {
         const result = await dialog.showOpenDialog(window, {
           title: "폴더 열기",
           properties: ["openDirectory", "showHiddenFiles"],
@@ -359,7 +573,7 @@ if (primaryInstance)
       );
       handle("transfers:cancel", stringId, (id) => transfers.cancel(id));
       handle("edits:open", locationSchema, (location) => edits.open(location));
-      handle("edits:choose-editor", z.undefined(), async () => {
+      handle("edits:choose-editor", z.undefined(), async (_args, window) => {
         const result = await dialog.showOpenDialog(window, {
           title: "텍스트 편집기 선택",
           message: "원격 파일을 수정할 앱 또는 실행 파일을 선택하세요.",
@@ -378,7 +592,7 @@ if (primaryInstance)
           id: z.string().uuid(),
           action: z.enum(editActions),
         }),
-        async ({ id, action }) => {
+        async ({ id, action }, window) => {
           const session = edits.list().find((s) => s.id === id);
           if (!session) throw new Error("편집 작업을 찾을 수 없습니다.");
           if (action === "reveal") {
@@ -400,46 +614,91 @@ if (primaryInstance)
           await edits.action(id, action);
         },
       );
-      let forceClose = false;
-      let checkingClose = false;
-      window.on("close", (event) => {
-        if (forceClose) return;
-        event.preventDefault();
-        if (checkingClose) return;
-        checkingClose = true;
-        void (async () => {
-          try {
-            await edits.stop();
-            if (transfers.active() || edits.unsettled()) {
-              const result = await dialog.showMessageBox(window, {
-                type: "question",
-                message: "진행 중인 작업을 보관하고 종료할까요?",
-                detail:
-                  "서버에 반영하지 못한 편집 내용은 이 기기에 보관됩니다. 다음 실행에서 연결하면 다시 확인합니다. 진행 중인 파일 전송은 취소됩니다.",
-                buttons: ["돌아가기", "보관하고 종료"],
-                defaultId: 0,
-                cancelId: 0,
-              });
-              if (result.response !== 1) {
-                edits.resume();
-                return;
+      createWindow = async (location) => {
+        const window = new BrowserWindow({
+          width: 1360,
+          height: 880,
+          minWidth: 860,
+          minHeight: 580,
+          title: "Sinder",
+          backgroundColor: "#f7f8fa",
+          titleBarStyle:
+            process.platform === "darwin" ? "hiddenInset" : "default",
+          trafficLightPosition: { x: 20, y: 22 },
+          vibrancy: "sidebar",
+          visualEffectState: "active",
+          webPreferences: {
+            preload: path.join(dirname, "preload.cjs"),
+            contextIsolation: true,
+            sandbox: true,
+            nodeIntegration: false,
+            webSecurity: true,
+          },
+        });
+        window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        window.webContents.on("will-navigate", (event) =>
+          event.preventDefault(),
+        );
+        windows.add(window);
+        windowOptions.set(window.id, {
+          initialLocation: location,
+          restoreWorkspace: windows.size === 1 && !location,
+        });
+        window.on("closed", () => {
+          windows.delete(window);
+          windowOptions.delete(window.id);
+          for (const [id, value] of dragExports)
+            if (value.owner === window.id) dragExports.delete(id);
+        });
+        let forceClose = false;
+        let checkingClose = false;
+        window.on("close", (event) => {
+          if (forceClose || windows.size > 1) return;
+          event.preventDefault();
+          if (checkingClose) return;
+          checkingClose = true;
+          closing = true;
+          void (async () => {
+            try {
+              await edits.stop();
+              if (
+                transfers.active() ||
+                edits.unsettled() ||
+                activeFilePromises()
+              ) {
+                const result = await dialog.showMessageBox(window, {
+                  type: "question",
+                  message: "진행 중인 작업을 보관하고 종료할까요?",
+                  detail:
+                    "서버에 반영하지 못한 편집 내용은 이 기기에 보관됩니다. 다음 실행에서 연결하면 다시 확인합니다. 진행 중인 파일 전송은 취소됩니다.",
+                  buttons: ["돌아가기", "보관하고 종료"],
+                  defaultId: 0,
+                  cancelId: 0,
+                });
+                if (result.response !== 1) {
+                  edits.resume();
+                  return;
+                }
               }
+              transfers.jobs.forEach((t) => transfers.cancel(t.id));
+              await transfers.idle();
+              await waitForFilePromises();
+              forceClose = true;
+              window.close();
+            } catch (error) {
+              edits.resume();
+              dialog.showErrorBox(
+                "작업 보관 실패",
+                error instanceof Error ? error.message : String(error),
+              );
+            } finally {
+              checkingClose = false;
+              closing = false;
             }
-            transfers.jobs.forEach((t) => transfers.cancel(t.id));
-            await transfers.idle();
-            forceClose = true;
-            window.close();
-          } catch (error) {
-            edits.resume();
-            dialog.showErrorBox(
-              "작업 보관 실패",
-              error instanceof Error ? error.message : String(error),
-            );
-          } finally {
-            checkingClose = false;
-          }
-        })();
-      });
+          })();
+        });
+        await window.loadFile(documentPath);
+      };
       Menu.setApplicationMenu(
         Menu.buildFromTemplate([
           {
@@ -451,6 +710,22 @@ if (primaryInstance)
               { role: "hideOthers" },
               { type: "separator" },
               { role: "quit" },
+            ],
+          },
+          {
+            label: "파일",
+            submenu: [
+              {
+                label: "새 창",
+                accelerator: "CmdOrCtrl+N",
+                click: () =>
+                  focusedWindow()?.webContents.send("window:new-requested"),
+              },
+              {
+                label: "창 닫기",
+                accelerator: "CmdOrCtrl+Shift+W",
+                click: () => focusedWindow()?.close(),
+              },
             ],
           },
           {
@@ -482,11 +757,11 @@ if (primaryInstance)
           },
         ]),
       );
-      await window.loadFile(documentPath);
+      await createWindow();
     })
     .catch((error) => {
       // Closing a window while its first page loads aborts that navigation.
-      if (window?.isDestroyed()) return;
+      if (!windows.size && closing) return;
       console.error("Sinder startup failed:", error);
       dialog.showErrorBox("Sinder를 시작하지 못했습니다", error.message);
       app.quit();

@@ -1,6 +1,6 @@
 {
   "name": "sinder",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "private": true,
   "description": "A calm desktop file explorer for local files and SSH workspaces",
   "author": "Sinder",
@@ -8,11 +8,13 @@
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "build": "tsc --noEmit && vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs",
+    "build": "node scripts/build-native.mjs && tsc --noEmit && vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs",
     "start": "electron .",
     "test": "tsx --test tests/*.test.ts",
     "test:e2e": "npm run build && playwright test",
-    "package": "npm run build && electron-builder --mac dir"
+    "package": "npm run build && electron-builder --mac dir",
+    "screenshots": "npm run build && node scripts/capture-screenshots.mjs",
+    "release:mac": "node scripts/release-mac.mjs"
   },
   "dependencies": {
     "ssh2": "^1.17.0",
@@ -28,6 +30,7 @@
     "@vitejs/plugin-react": "^6.0.0",
     "electron": "^44.3.0",
     "electron-builder": "^26.15.3",
+    "node-gyp": "^12.4.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tsx": "^4.21.0",
@@ -41,7 +44,9 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json",
-      "!**/node_modules/cpu-features/**"
+      "assets/icon.png",
+      "!**/node_modules/cpu-features/**",
+      "native/build/Release/sinder_file_promises.node"
     ],
     "directories": {
       "output": "release"
@@ -66,6 +71,9 @@
       ],
       "icon": "assets/icon.png"
     },
-    "npmRebuild": false
+    "npmRebuild": false,
+    "asarUnpack": [
+      "native/build/Release/sinder_file_promises.node"
+    ]
   }
 }

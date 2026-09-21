@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DownloadSimple,
+  ArrowSquareOut,
   ArrowRight,
   ArrowsLeftRight,
   Check,
@@ -28,6 +29,7 @@ import {
   X,
 } from "./icons";
 import type {
+  ExternalExport,
   Bookmark,
   Bootstrap,
   Connection,
@@ -74,6 +76,12 @@ export function App() {
   const [tabId, setTabId] = useState("");
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   const [selected, setSelected] = useState<Entry[]>([]);
+  const [externalExport, setExternalExport] = useState<{
+    loading: boolean;
+    result?: ExternalExport;
+    error?: string;
+  } | null>(null);
+  const exportSequence = useRef(0);
   const [hidden, setHidden] = useState(
     localStorage.getItem("sinder-hidden") === "true",
   );
@@ -128,7 +136,12 @@ export function App() {
     (t) => t.status === "running" || t.status === "queued",
   );
   const modalOpen = Boolean(
-    connectionDialog || preview || naming || pendingTransfer || shortcuts,
+    connectionDialog ||
+      preview ||
+      naming ||
+      pendingTransfer ||
+      shortcuts ||
+      externalExport,
   );
   const activeEdits = editSessions.filter(
     (session) => session.status !== "paused",
@@ -158,11 +171,12 @@ export function App() {
         setBookmarks(data.bookmarks);
         setTransfers(data.transfers);
         setEditSessions(data.edits);
+        setClipboard(data.clipboard);
         let saved: Tab[] = [];
         try {
-          const parsed = JSON.parse(
-            localStorage.getItem("sinder-tabs") ?? "[]",
-          );
+          const parsed = data.restoreWorkspace
+            ? JSON.parse(localStorage.getItem("sinder-tabs") ?? "[]")
+            : [];
           if (Array.isArray(parsed))
             saved = parsed
               .slice(0, 20)
@@ -200,13 +214,33 @@ export function App() {
         }
         const initial = saved.length
           ? saved
-          : [newTab({ connectionId: "local", path: data.home })];
+          : [
+              newTab(
+                data.initialLocation ?? {
+                  connectionId: "local",
+                  path: data.home,
+                },
+              ),
+            ];
         setTabs(initial);
         setTabId(initial[0].id);
       })
       .catch((e) => setBootError(errorText(e)));
+    const offClipboard = window.sinder.onClipboard(setClipboard);
+    const offDragError = window.sinder.onDragError((message) =>
+      notify(message, true),
+    );
     const offConnections = window.sinder.onConnections((data) => {
       setConnections(data);
+      void window.sinder
+        .bootstrap()
+        .then((latest) => {
+          if (live) {
+            setProfiles(latest.profiles);
+            setBookmarks(latest.bookmarks);
+          }
+        })
+        .catch(() => {});
       setRefreshKey((k) => k + 1);
     });
     const offTransfers = window.sinder.onTransfers((data) => {
@@ -240,6 +274,8 @@ export function App() {
     );
     return () => {
       live = false;
+      offClipboard();
+      offDragError();
       offConnections();
       offTransfers();
       offEdits();
@@ -247,7 +283,7 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    if (tabs.length)
+    if (tabs.length && boot?.restoreWorkspace)
       localStorage.setItem(
         "sinder-tabs",
         JSON.stringify(
@@ -261,7 +297,21 @@ export function App() {
           })),
         ),
       );
-  }, [tabs]);
+  }, [tabs, boot]);
+  useEffect(
+    () =>
+      window.sinder?.onNewWindow(() => {
+        guard(window.sinder.newWindow(activePane?.location));
+      }),
+    [activePane?.location],
+  );
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === "sinder-hidden") setHidden(event.newValue === "true");
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, []);
   useEffect(() => {
     localStorage.setItem("sinder-hidden", String(hidden));
   }, [hidden]);
@@ -305,7 +355,11 @@ export function App() {
   }
   function closeTab(id: string) {
     const index = tabs.findIndex((tab) => tab.id === id);
-    if (tabs.length <= 1 || index < 0) return;
+    if (index < 0) return;
+    if (tabs.length <= 1) {
+      guard(window.sinder.closeWindow());
+      return;
+    }
     setTabs((previous) => previous.filter((tab) => tab.id !== id));
     if (id === activeTab?.id) {
       setTabId(tabs[index === 0 ? 1 : index - 1].id);
@@ -337,7 +391,9 @@ export function App() {
         return;
       let action: Command | undefined;
       if (mod) {
-        const key = event.key.toLowerCase();
+        // Option changes the produced character on macOS (Option-N is a dead
+        // key), so the N shortcuts must use the physical key when available.
+        const key = event.code === "KeyN" ? "n" : event.key.toLowerCase();
         action = (
           {
             c: "copy",
@@ -351,7 +407,15 @@ export function App() {
             "]": "forward",
           } as Record<string, Command>
         )[key];
-        if (key === "n" && event.shiftKey) action = "mkdir";
+        if (key === "n" && event.altKey && !event.shiftKey) action = "mkdir";
+        if (key === "n" && event.shiftKey && !event.altKey) {
+          event.preventDefault();
+          setHidden((visible) => !visible);
+        }
+        if (key === "n" && !event.shiftKey && !event.altKey) {
+          event.preventDefault();
+          guard(window.sinder.newWindow(activePane?.location));
+        }
         if (key === "t") {
           event.preventDefault();
           addTab();
@@ -372,7 +436,7 @@ export function App() {
           event.preventDefault();
           setSidebarVisible((visible) => !visible);
         }
-        if (key === ".") {
+        if (key === "." || (event.code === "Period" && event.shiftKey)) {
           event.preventDefault();
           setHidden((h) => !h);
         }
@@ -384,7 +448,8 @@ export function App() {
       else if (event.key === "F2") action = "rename";
       else if (event.key === "F5") action = "refresh";
       else if (event.key === " " || event.key === "Enter") {
-        if (element.matches('.file-area[role="listbox"]')) action = "preview";
+        if (element.matches('.file-area[role="listbox"]'))
+          action = event.key === "Enter" ? "open" : "preview";
       } else if (event.key === "Delete") action = "trash";
       if (action) {
         if (
@@ -477,6 +542,30 @@ export function App() {
     )
       setPendingTransfer(request);
     else await beginTransfer(request);
+  }
+  async function openFile(location: Location) {
+    if (location.connectionId !== "local") notify("원격 파일을 여는 중…");
+    const result = await window.sinder.open(location);
+    if (result.kind === "edit") {
+      setActivityPanel("edits");
+      notify("편집기에서 저장하면 서버에 자동으로 반영됩니다.");
+    } else if (result.kind === "copy") {
+      notify(
+        "다운로드한 사본을 열었습니다. 수정 내용은 서버에 자동 반영되지 않습니다.",
+      );
+    }
+  }
+  async function prepareExport(source: Location[]) {
+    const sequence = ++exportSequence.current;
+    setExternalExport({ loading: true });
+    try {
+      const result = await window.sinder.prepareExport(source);
+      if (sequence === exportSequence.current)
+        setExternalExport({ loading: false, result });
+    } catch (error) {
+      if (sequence === exportSequence.current)
+        setExternalExport({ loading: false, error: errorText(error) });
+    }
   }
   const askName = (title: string, initial: string) =>
     new Promise<string | null>((resolve) =>
@@ -721,7 +810,7 @@ export function App() {
           </div>
           <div className="toolbar-actions">
             <Tool
-              label={keyLabel("새 폴더 (⌘⇧N)")}
+              label={keyLabel("새 폴더 (⌘⌥N)")}
               onClick={() => command("mkdir")}
             >
               <FolderPlus size={20} />
@@ -747,6 +836,17 @@ export function App() {
               onClick={() => command("paste")}
             >
               <ClipboardText size={20} />
+            </Tool>
+            <Tool
+              label={
+                boot.platform === "darwin"
+                  ? "Finder로 꺼내기"
+                  : "파일 탐색기로 꺼내기"
+              }
+              disabled={!selected.length}
+              onClick={() => command("export")}
+            >
+              <ArrowSquareOut size={20} />
             </Tool>
             <span className="toolbar-divider" />
             <Tool
@@ -835,11 +935,17 @@ export function App() {
           <Tool label={keyLabel("새 탭 (⌘T)")} onClick={() => addTab()}>
             <Plus size={17} />
           </Tool>
+          <Tool
+            label={keyLabel("새 창 (⌘N)")}
+            onClick={() => guard(window.sinder.newWindow(activePane.location))}
+          >
+            <ArrowSquareOut size={17} />
+          </Tool>
           <div className="tabs-spacer" />
           <button
             className={`hidden-toggle ${hidden ? "enabled" : ""}`}
             aria-pressed={hidden}
-            title={keyLabel("숨김 파일 (⌘.)")}
+            title={keyLabel("숨김 파일 표시 (⌘⇧N)")}
             onClick={() => setHidden(!hidden)}
           >
             {hidden && <Check size={12} />}숨김 파일
@@ -877,7 +983,11 @@ export function App() {
                 onChange={(next) =>
                   changePane(activeTab.id, pane.id, () => next)
                 }
-                onClipboard={setClipboard}
+                onClipboard={(value) =>
+                  guard(window.sinder.setClipboard(value))
+                }
+                onOpen={(location) => guard(openFile(location))}
+                onExport={(source) => void prepareExport(source)}
                 onPreview={(location, entry) => setPreview({ location, entry })}
                 onSelection={setSelected}
                 onTransfer={(request) => guard(transfer(request))}
@@ -1126,7 +1236,7 @@ export function App() {
           )}
           <span className="status-hint">
             {activeTab.panes.length === 2
-              ? "패널 사이 드래그로 복사 · Shift로 이동"
+              ? "창·패널 사이 드래그로 복사 · Shift로 이동"
               : `${keyLabel("⌘\\")} 분할 보기`}
           </span>
         </footer>
@@ -1213,6 +1323,7 @@ export function App() {
             )
           }
           notify={notify}
+          onOpen={() => guard(openFile(preview.location))}
           onEdit={() =>
             guard(
               window.sinder.editRemote(preview.location).then(() => {
@@ -1282,6 +1393,68 @@ export function App() {
           </div>
         </Modal>
       )}
+      {externalExport && (
+        <Modal
+          title={
+            boot.platform === "darwin"
+              ? "Finder로 꺼내기"
+              : "파일 탐색기로 꺼내기"
+          }
+          onClose={() => {
+            exportSequence.current++;
+            setExternalExport(null);
+          }}
+        >
+          {externalExport.loading ? (
+            <>
+              <div className="loader" />
+              <p className="dialog-copy">
+                파일을 준비하는 중입니다. 원격 항목은 먼저 다운로드합니다. 전송
+                패널에서 진행 확인과 취소가 가능합니다.
+              </p>
+            </>
+          ) : externalExport.error ? (
+            <p role="alert" className="inline-error">
+              {externalExport.error}
+            </p>
+          ) : (
+            <>
+              <p className="dialog-copy">
+                아래 항목을 Finder·파일 탐색기 또는 바탕 화면으로 드래그하세요.
+                원격 파일은 다운로드한 사본을 전달하며 서버 원본은 유지합니다.
+              </p>
+              <div
+                className="external-drag"
+                draggable
+                role="button"
+                tabIndex={0}
+                aria-label="준비된 파일을 외부로 드래그"
+                onDragStart={(event) => {
+                  event.preventDefault();
+                  if (externalExport.result)
+                    window.sinder.startDrag(externalExport.result.id);
+                }}
+              >
+                <ArrowSquareOut size={26} />
+                <strong>
+                  {externalExport.result?.names.length}개 항목 · 여기서 드래그
+                </strong>
+                <span>{externalExport.result?.names.join(", ")}</span>
+              </div>
+            </>
+          )}
+          <div className="modal-actions">
+            <button
+              onClick={() => {
+                exportSequence.current++;
+                setExternalExport(null);
+              }}
+            >
+              닫기
+            </button>
+          </div>
+        </Modal>
+      )}
       {shortcuts && (
         <Modal
           title="손끝에서 이어지는 작업"
@@ -1289,6 +1462,7 @@ export function App() {
         >
           <div className="shortcut-list">
             {[
+              ["새 창", "⌘ N"],
               ["새 탭", "⌘ T"],
               ["탭 닫기", "⌘ W"],
               ["분할 보기", "⌘ \\"],
@@ -1296,11 +1470,11 @@ export function App() {
               ["폴더에서 검색", "⌘ F"],
               ["사이드바", "⌘ B"],
               ["정보 패널", "⌘ I"],
-              ["새 폴더", "⌘ ⇧ N"],
+              ["새 폴더", "⌘ ⌥ N"],
               ["복사 / 잘라내기 / 붙여넣기", "⌘ C / X / V"],
               ["전체 선택", "⌘ A"],
-              ["숨김 파일", "⌘ ."],
-              ["미리보기 / 폴더 열기", "Space / Enter"],
+              ["숨김 파일", "⌘ ⇧ N"],
+              ["미리보기 / 기본 앱에서 열기", "Space / Enter"],
               ["이름 변경", "F2"],
               ["휴지통으로 이동", "⌘ ⌫ / Delete"],
               ["새로 고침", "⌘ R / F5"],
@@ -1368,6 +1542,7 @@ function PreviewDialog({
   onDownload,
   notify,
   onEdit,
+  onOpen,
 }: {
   location: Location;
   entry: Entry;
@@ -1375,6 +1550,7 @@ function PreviewDialog({
   onDownload: () => void;
   notify: (message: string, error?: boolean) => void;
   onEdit: () => void;
+  onOpen: () => void;
 }) {
   const [content, setContent] = useState<Preview | null>(null);
   const [error, setError] = useState("");
@@ -1430,17 +1606,8 @@ function PreviewDialog({
               원격 편집
             </button>
           )}
-        {location.connectionId === "local" ? (
-          <button
-            onClick={() => {
-              void window.sinder
-                .open(location)
-                .catch((e) => notify(errorText(e), true));
-            }}
-          >
-            기본 앱에서 열기
-          </button>
-        ) : (
+        <button onClick={onOpen}>기본 앱에서 열기</button>
+        {location.connectionId !== "local" && (
           <button onClick={onDownload}>
             <DownloadSimple size={16} />
             로컬로 다운로드

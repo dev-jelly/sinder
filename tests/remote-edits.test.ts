@@ -249,7 +249,12 @@ test(
       await fs.rename(replacement, session.localPath);
       const deadline = Date.now() + 10000;
       while (
-        (await fs.readFile(f.remotePath, "utf8")) !== "Automatic save\n" &&
+        (await fs.readFile(f.remotePath, "utf8").catch((error) => {
+          // Publishing first moves the previous server version into backup.
+          // The original path can be absent between the two SFTP renames.
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+          throw error;
+        })) !== "Automatic save\n" &&
         Date.now() < deadline
       )
         await new Promise((resolve) => setTimeout(resolve, 100));

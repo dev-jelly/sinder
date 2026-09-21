@@ -57,6 +57,8 @@ import {
 export type { PaneState } from "./workspace";
 export type Clipboard = { source: Location[]; move: boolean };
 export type Command =
+  | "open"
+  | "export"
   | "copy"
   | "cut"
   | "paste"
@@ -85,6 +87,8 @@ type Props = {
   onChange: (state: PaneState) => void;
   onClipboard: (clipboard: Clipboard) => void;
   onPreview: (location: Location, entry: Entry) => void;
+  onOpen: (location: Location) => void;
+  onExport: (source: Location[]) => void;
   onSelection: (entries: Entry[]) => void;
   onTransfer: (request: TransferRequest) => void;
   onBookmark: (bookmark: Bookmark) => void;
@@ -101,12 +105,14 @@ const sortColumns = [
 ] as const;
 
 const menuCommands = [
-  { command: "preview", label: "열기 / 미리보기", icon: Info, keys: "Space" },
+  { command: "open", label: "열기", icon: FolderOpen, keys: "Enter" },
+  { command: "preview", label: "미리보기", icon: Info, keys: "Space" },
+  { command: "export", label: "외부로 꺼내기…", icon: Copy, keys: "" },
   { command: "copy", label: "복사", icon: Copy, keys: "⌘C" },
   { command: "cut", label: "잘라내기", icon: Scissors, keys: "⌘X" },
   { command: "paste", label: "붙여넣기", icon: ClipboardText, keys: "⌘V" },
   { command: "rename", label: "이름 변경", icon: PencilSimple, keys: "F2" },
-  { command: "mkdir", label: "새 폴더", icon: FolderPlus, keys: "⌘⇧N" },
+  { command: "mkdir", label: "새 폴더", icon: FolderPlus, keys: "⌘⌥N" },
   { command: "trash", label: "휴지통으로 이동", icon: Trash, keys: "⌘⌫" },
 ] as const;
 
@@ -288,9 +294,9 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
         const result = await window.sinder.list(location);
         navigate({ ...location, path: result.path });
       } catch {
-        props.onPreview(location, entry);
+        props.onOpen(location);
       }
-    } else props.onPreview(location, entry);
+    } else props.onOpen(location);
   }
   const perform = async (command: Command) => {
     setContext(null);
@@ -348,8 +354,17 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
           });
         return;
       }
-      if (command === "preview") {
-        if (selectedEntries[0]) await open(selectedEntries[0]);
+      if (command === "open" || command === "preview") {
+        const entry = selectedEntries[0];
+        if (entry) {
+          if (command === "open" || entry.kind === "directory")
+            await open(entry);
+          else props.onPreview({ ...state.location, path: entry.path }, entry);
+        }
+        return;
+      }
+      if (command === "export") {
+        if (selectedEntries.length) props.onExport(locations());
         return;
       }
       if (loading || error) return;
@@ -471,8 +486,14 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
     event.preventDefault();
     event.stopPropagation();
     setDragOver(false);
+    if (loading || error || connection?.status !== "connected") return;
     try {
-      const internal = event.dataTransfer.getData("application/x-sinder");
+      const text = event.dataTransfer.getData("text/plain").split("\n")[0];
+      const internal =
+        event.dataTransfer.getData("application/x-sinder") ||
+        (text.startsWith("SinderFiles:")
+          ? text.slice("SinderFiles:".length)
+          : "");
       const source: Location[] = internal
         ? JSON.parse(internal)
         : Array.from(event.dataTransfer.files)
@@ -485,7 +506,7 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
         props.onTransfer({
           source,
           destination,
-          move: event.shiftKey,
+          move: event.shiftKey && !event.altKey && !event.ctrlKey,
           conflict: "keep-both",
         });
     } catch {
@@ -507,6 +528,8 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
     }
   };
   const disabledCommands: Partial<Record<Command, boolean>> = {
+    open: !selectedEntries.length,
+    export: !selectedEntries.length,
     preview: !selectedEntries.length,
     copy: !selectedEntries.length,
     cut: !selectedEntries.length,
@@ -813,10 +836,14 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
         onDragOver={(event) => {
           if (
             event.dataTransfer.types.includes("application/x-sinder") ||
-            event.dataTransfer.types.includes("Files")
+            event.dataTransfer.types.includes("Files") ||
+            event.dataTransfer.types.includes("text/plain")
           ) {
             event.preventDefault();
-            event.dataTransfer.dropEffect = event.shiftKey ? "move" : "copy";
+            event.dataTransfer.dropEffect =
+              event.shiftKey && !event.altKey && !event.ctrlKey
+                ? "move"
+                : "copy";
             setDragOver(true);
           }
         }}
@@ -913,14 +940,52 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
                   JSON.stringify(source),
                 );
                 event.dataTransfer.effectAllowed = "copyMove";
+                if (
+                  state.location.connectionId === "local" &&
+                  source.every(
+                    (location) =>
+                      entries.find((item) => item.path === location.path)
+                        ?.kind !== "symlink",
+                  )
+                ) {
+                  event.preventDefault();
+                  window.sinder.startLocalDrag(
+                    source.map((location) => location.path),
+                  );
+                } else if (
+                  props.platform === "darwin" &&
+                  state.location.connectionId !== "local" &&
+                  source.every((location) => {
+                    const kind = entries.find(
+                      (item) => item.path === location.path,
+                    )?.kind;
+                    return kind === "file" || kind === "directory";
+                  })
+                ) {
+                  event.preventDefault();
+                  window.sinder.startRemoteDrag(
+                    source.map((location) => ({
+                      location,
+                      directory:
+                        entries.find((item) => item.path === location.path)
+                          ?.kind === "directory",
+                    })),
+                  );
+                }
               }}
               onDragOver={(event) => {
                 if (
                   entry.kind === "directory" &&
                   (event.dataTransfer.types.includes("application/x-sinder") ||
-                    event.dataTransfer.types.includes("Files"))
+                    event.dataTransfer.types.includes("Files") ||
+                    event.dataTransfer.types.includes("text/plain"))
                 ) {
                   event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect =
+                    event.shiftKey && !event.altKey && !event.ctrlKey
+                      ? "move"
+                      : "copy";
                   event.currentTarget.classList.add("folder-drop");
                 }
               }}

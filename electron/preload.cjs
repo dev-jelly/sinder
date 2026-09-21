@@ -11,6 +11,16 @@ const subscribe = (channel, callback) => {
 };
 contextBridge.exposeInMainWorld("sinder", {
   bootstrap: () => invoke("bootstrap"),
+  newWindow: (location) => invoke("window:new", location),
+  closeWindow: () => invoke("window:close"),
+  setClipboard: (value) => invoke("clipboard:set", value),
+  onClipboard: (callback) => subscribe("clipboard:changed", callback),
+  onNewWindow: (callback) => subscribe("window:new-requested", callback),
+  prepareExport: (source) => invoke("files:prepare-export", source),
+  startDrag: (id) => ipcRenderer.send("files:start-drag", id),
+  startLocalDrag: (paths) => ipcRenderer.send("files:drag-local", paths),
+  startRemoteDrag: (entries) => ipcRenderer.send("files:drag-remote", entries),
+  onDragError: (callback) => subscribe("files:drag-error", callback),
   list: (location) => invoke("files:list", location),
   mkdir: (location, name) => invoke("files:mkdir", { location, name }),
   rename: (location, name) => invoke("files:rename", { location, name }),

@@ -6,6 +6,7 @@ test-results/
 playwright-report/
 .DS_Store
 .sinder-dev/
+native/build/
 
 # Local credentials and private publication backups
 .env

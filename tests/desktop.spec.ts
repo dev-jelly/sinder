@@ -167,7 +167,7 @@ test("desktop local workflow: navigation, selection, preview, split copy, rename
     await expect(page.locator("pre")).toContainText("로컬과 원격");
     await page.keyboard.press("Escape");
     await page
-      .getByRole("button", { name: "새 폴더 (⌘⇧N)", exact: true })
+      .getByRole("button", { name: "새 폴더 (⌘⌥N)", exact: true })
       .click();
     await page
       .getByRole("textbox", { name: "이름", exact: true })
@@ -376,7 +376,8 @@ test("desktop SSH workflow through connection form and split-pane transfer", asy
     ).toContain("로컬과 원격");
     await right
       .getByRole("option", { name: "server.txt", exact: true })
-      .dblclick();
+      .click();
+    await page.keyboard.press("Space");
     await expect(page.locator("pre")).toContainText("실제 OpenSSH 서버");
     await page.keyboard.press("Escape");
     await page.screenshot({ path: "test-results/ssh-split.png" });
@@ -656,11 +657,11 @@ test("keyboard selection, pane focus and activity panels stay aligned with file 
     await page.keyboard.press("Shift+F10");
     const menu = page.getByRole("menu", { name: "파일 작업" });
     await expect(menu).toBeVisible();
-    await expect(
-      menu.getByRole("menuitem", { name: /^열기 \/ 미리보기/ }),
-    ).toBeFocused();
+    await expect(menu.getByRole("menuitem", { name: /^열기/ })).toBeFocused();
     await page.keyboard.press("ArrowDown");
-    await expect(menu.getByRole("menuitem", { name: /^복사/ })).toBeFocused();
+    await expect(
+      menu.getByRole("menuitem", { name: /^미리보기/ }),
+    ).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
     await expect(rightList).toBeFocused();
@@ -820,7 +821,6 @@ test("remote editor saves, resolves a conflict, reconnects in place and restores
     await page
       .getByRole("option", { name: "notes.txt", exact: true })
       .dblclick();
-    await page.getByRole("button", { name: "원격 편집", exact: true }).click();
     const row = page.getByRole("article", {
       name: "notes.txt 편집 작업",
       exact: true,
@@ -908,6 +908,513 @@ test("remote editor saves, resolves a conflict, reconnects in place and restores
     ).toBe(session.localPath);
   } finally {
     await second?.close();
+    await f.close();
+    await server.close();
+  }
+});
+
+test("independent windows share clipboard and transfers, accept cross-window drops and keep remaining window alive", async () => {
+  const f = await fixture();
+  try {
+    await f.page.keyboard.press(`${modifier}+n`);
+    await expect.poll(() => f.app.windows().length).toBe(2);
+    const second = f.app.windows().find((page) => page !== f.page)!;
+    await expect(
+      second.getByRole("option", { name: "Project notes.md", exact: true }),
+    ).toBeVisible();
+    await second
+      .getByRole("option", { name: "Downloads", exact: true })
+      .dblclick();
+    await expect(
+      second.getByText("비어 있는 폴더", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      f.page.getByRole("option", { name: "Downloads", exact: true }),
+    ).toBeVisible();
+    await f.page.locator(".file-area").focus();
+    await f.page.keyboard.press(`${modifier}+Shift+n`);
+    await expect(
+      f.page.getByRole("option", { name: ".hidden-config", exact: true }),
+    ).toBeVisible();
+    await expect(
+      second.getByRole("button", { name: "숨김 파일", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(f.page.getByRole("dialog")).toHaveCount(0);
+    expect(f.app.windows()).toHaveLength(2);
+    await f.page.keyboard.press(`${modifier}+Alt+n`);
+    await expect(
+      f.page.getByRole("dialog", { name: "새 폴더", exact: true }),
+    ).toBeVisible();
+    expect(f.app.windows()).toHaveLength(2);
+    await f.page.keyboard.press("Escape");
+    await f.page
+      .getByRole("option", { name: "package.json", exact: true })
+      .click();
+    await f.page
+      .getByRole("button", { name: "복사 (⌘C)", exact: true })
+      .click();
+    await expect(
+      second.getByRole("button", { name: "붙여넣기 (⌘V)", exact: true }),
+    ).toBeEnabled();
+    await second
+      .getByRole("button", { name: "붙여넣기 (⌘V)", exact: true })
+      .click();
+    await expect(
+      second.getByRole("option", { name: "package.json", exact: true }),
+    ).toBeVisible();
+    expect(
+      await fs.readFile(path.join(f.home, "Downloads/package.json"), "utf8"),
+    ).toContain("workspace");
+    const source = f.page.getByRole("option", {
+      name: "Project notes.md",
+      exact: true,
+    });
+    await f.app.evaluate(({ BrowserWindow }) => {
+      for (const window of BrowserWindow.getAllWindows())
+        window.webContents.startDrag = () => {};
+    });
+    const payload = await source.evaluate((element) => {
+      const dataTransfer = new DataTransfer();
+      element.dispatchEvent(
+        new DragEvent("dragstart", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer,
+        }),
+      );
+      return dataTransfer.getData("application/x-sinder");
+    });
+    expect(JSON.parse(payload)).toHaveLength(1);
+    await second.locator(".file-area").evaluate((element, payload) => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData("application/x-sinder", payload);
+      element.dispatchEvent(
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          shiftKey: true,
+          dataTransfer,
+        }),
+      );
+    }, payload);
+    await expect(
+      second.getByRole("option", { name: "Project notes.md", exact: true }),
+    ).toBeVisible();
+    await expect(source).toHaveCount(0);
+    await expect
+      .poll(
+        async () =>
+          (
+            await f.page.evaluate(() => window.sinder.bootstrap())
+          ).transfers.filter((job) => job.status === "done").length,
+      )
+      .toBe(2);
+    await f.page.evaluate(() => window.sinder.closeWindow());
+    await expect.poll(() => f.app.windows().length).toBe(1);
+    const result = await second.evaluate(() => window.sinder.bootstrap());
+    expect(result.connections[0].status).toBe("connected");
+    await second
+      .getByRole("option", { name: "Project notes.md", exact: true })
+      .click();
+    await second.keyboard.press("Space");
+    await expect(second.locator("pre")).toContainText("로컬과 원격");
+  } finally {
+    await f.close();
+  }
+});
+
+test("native export passes real multiple paths to Electron and scopes drag tokens to the owning window", async () => {
+  const f = await fixture();
+  f.home = await fs.realpath(f.home);
+  try {
+    await f.app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      contents.startDrag = (item) => {
+        (globalThis as any).__sinderDrag = {
+          file: item.file,
+          files: item.files,
+          iconEmpty: typeof item.icon === "string" || item.icon.isEmpty(),
+        };
+      };
+    });
+    await f.page
+      .getByRole("option", { name: "Project notes.md", exact: true })
+      .dispatchEvent("dragstart", {
+        dataTransfer: await f.page.evaluateHandle(() => new DataTransfer()),
+      });
+    await expect
+      .poll(() => f.app.evaluate(() => (globalThis as any).__sinderDrag))
+      .toMatchObject({
+        files: [path.join(f.home, "Project notes.md")],
+        iconEmpty: false,
+      });
+    await f.page
+      .getByRole("option", { name: "Project notes.md", exact: true })
+      .click();
+    await f.page
+      .getByRole("option", { name: "package.json", exact: true })
+      .click({ modifiers: [modifier] });
+    await f.page
+      .getByRole("button", { name: "Finder로 꺼내기", exact: true })
+      .click();
+    const prepared = f.page.getByRole("button", {
+      name: "준비된 파일을 외부로 드래그",
+      exact: true,
+    });
+    await expect(prepared).toContainText("2개 항목");
+    await f.page.screenshot({ path: "test-results/native-export.png" });
+    await prepared.dispatchEvent("dragstart");
+    await expect
+      .poll(() => f.app.evaluate(() => (globalThis as any).__sinderDrag))
+      .toMatchObject({
+        files: expect.arrayContaining([
+          path.join(f.home, "Project notes.md"),
+          path.join(f.home, "package.json"),
+        ]),
+        iconEmpty: false,
+      });
+    await f.page.keyboard.press("Escape");
+    const token = await f.page.evaluate(
+      (p) => window.sinder.prepareExport([{ connectionId: "local", path: p }]),
+      path.join(f.home, "package.json"),
+    );
+    await f.page.evaluate(() => window.sinder.newWindow());
+    await expect.poll(() => f.app.windows().length).toBe(2);
+    const second = f.app.windows().find((page) => page !== f.page)!;
+    await expect(second.locator(".file-area")).toBeVisible();
+    await second.evaluate((id) => window.sinder.startDrag(id), token.id);
+    await expect(second.getByRole("alert")).toContainText("다시 준비");
+    await f.app.evaluate(({ shell }) => {
+      shell.openPath = async (filename) => {
+        (globalThis as any).__sinderOpened = filename;
+        return "";
+      };
+    });
+    await f.page
+      .getByRole("option", { name: "Project notes.md", exact: true })
+      .dblclick();
+    await expect
+      .poll(() => f.app.evaluate(() => (globalThis as any).__sinderOpened))
+      .toBe(path.join(f.home, "Project notes.md"));
+  } finally {
+    await f.close();
+  }
+});
+
+test("remote documents open as local copies and prepared remote exports preserve the server", async () => {
+  const server = await startSshd();
+  const f = await fixture();
+  try {
+    const remote = path.join(server.root, "Documents");
+    await fs.mkdir(remote);
+    const bytes = Buffer.from("%PDF-1.4\nFixture document\n");
+    await fs.writeFile(path.join(remote, "report.pdf"), bytes);
+    await fs.writeFile(path.join(remote, "do-not-run.exe"), "fixture");
+    await f.app.evaluate(({ dialog, shell }) => {
+      dialog.showMessageBox = async () => ({
+        response: 1,
+        checkboxChecked: false,
+      });
+      shell.openPath = async (filename) => {
+        (globalThis as any).__remoteOpened = filename;
+        return "";
+      };
+    });
+    const connection = await f.page.evaluate(
+      async (server) => {
+        return window.sinder.connect(
+          {
+            id: crypto.randomUUID(),
+            name: "Document server",
+            host: "127.0.0.1",
+            port: server.port,
+            username: server.username,
+            auth: "key",
+            keyPath: server.key,
+            initialPath: server.remote,
+          },
+          {},
+        );
+      },
+      { port: server.port, username: server.username, key: server.key, remote },
+    );
+    await f.page.evaluate((location) => window.sinder.newWindow(location), {
+      connectionId: connection.id,
+      path: remote,
+    });
+    await expect.poll(() => f.app.windows().length).toBe(2);
+    const second = f.app.windows().find((page) => page !== f.page)!;
+    await expect(
+      second.getByRole("option", { name: "report.pdf", exact: true }),
+    ).toBeVisible();
+    await second
+      .getByRole("option", { name: "report.pdf", exact: true })
+      .dblclick();
+    await expect(second.getByRole("status")).toContainText("사본을 열었습니다");
+    const opened = await f.app.evaluate(
+      () => (globalThis as any).__remoteOpened as string,
+    );
+    expect(opened).not.toBe(path.join(remote, "report.pdf"));
+    expect(await fs.readFile(opened)).toEqual(bytes);
+    await fs.writeFile(opened, "Edited local copy");
+    expect(await fs.readFile(path.join(remote, "report.pdf"))).toEqual(bytes);
+    expect(
+      (await second.evaluate(() => window.sinder.bootstrap())).edits,
+    ).toHaveLength(0);
+    await second
+      .getByRole("option", { name: "do-not-run.exe", exact: true })
+      .dblclick();
+    await expect(second.getByRole("alert")).toContainText("바로 열지 않습니다");
+    expect(await f.app.evaluate(() => (globalThis as any).__remoteOpened)).toBe(
+      opened,
+    );
+    await f.app.evaluate(({ BrowserWindow }) => {
+      for (const window of BrowserWindow.getAllWindows())
+        window.webContents.startDrag = (item) => {
+          (globalThis as any).__remoteDragged = item.files;
+        };
+    });
+    await second
+      .getByRole("option", { name: "report.pdf", exact: true })
+      .click();
+    await second
+      .getByRole("button", { name: "Finder로 꺼내기", exact: true })
+      .click();
+    const ready = second.getByRole("button", {
+      name: "준비된 파일을 외부로 드래그",
+    });
+    await expect(ready).toContainText("report.pdf");
+    await ready.dispatchEvent("dragstart");
+    await expect
+      .poll(() =>
+        f.app.evaluate(() => (globalThis as any).__remoteDragged?.length),
+      )
+      .toBe(1);
+    const exported = await f.app.evaluate(
+      () => (globalThis as any).__remoteDragged[0] as string,
+    );
+    expect(await fs.readFile(exported)).toEqual(bytes);
+    expect(await fs.readFile(path.join(remote, "report.pdf"))).toEqual(bytes);
+    await second.evaluate(() => window.sinder.closeWindow());
+    await expect.poll(() => f.app.windows().length).toBe(1);
+    expect(
+      (await f.page.evaluate(() => window.sinder.bootstrap())).connections.find(
+        (item) => item.id === connection.id,
+      )?.status,
+    ).toBe("connected");
+  } finally {
+    await f.close();
+    await server.close();
+  }
+});
+
+test("macOS remote row drag fulfills real AppKit file promises through SSH", async () => {
+  test.skip(process.platform !== "darwin", "macOS file-promise protocol");
+  const server = await startSshd();
+  const f = await fixture();
+  try {
+    const remote = path.join(server.root, "Promised files");
+    const destination = path.join(f.root, "Finder destination");
+    await fs.mkdir(path.join(remote, "Assets"), { recursive: true });
+    await fs.mkdir(destination);
+    await fs.writeFile(
+      path.join(remote, "report.txt"),
+      "Downloaded after dropping into Finder\n",
+    );
+    await fs.writeFile(
+      path.join(remote, "Assets", "nested.txt"),
+      "Nested remote file\n",
+    );
+    await f.app.evaluate(async ({ app, dialog }, destination) => {
+      dialog.showMessageBox = async () => ({
+        response: 1,
+        checkboxChecked: false,
+      });
+      const { createRequire } = process.getBuiltinModule("node:module");
+      const require = createRequire(`${app.getAppPath()}/package.json`);
+      const native = require("./native/build/Release/sinder_file_promises.node");
+      const receiver = require("./native/build/Release/sinder_file_promises_test.node");
+      (globalThis as any).__promiseReceiver = receiver;
+      native.startDrag = (
+        _handle: Buffer,
+        entries: unknown[],
+        payload: string,
+        callback: unknown,
+      ) => {
+        (globalThis as any).__promisePayload = payload;
+        (globalThis as any).__promiseCount = receiver.receiveForTest(
+          entries,
+          payload,
+          callback,
+          destination,
+        );
+      };
+    }, destination);
+    const connection = await f.page.evaluate(
+      async (server) =>
+        window.sinder.connect(
+          {
+            id: crypto.randomUUID(),
+            name: "Promise server",
+            host: "127.0.0.1",
+            port: server.port,
+            username: server.username,
+            auth: "key",
+            keyPath: server.key,
+            initialPath: server.remote,
+          },
+          {},
+        ),
+      { port: server.port, username: server.username, key: server.key, remote },
+    );
+    await f.page.evaluate((location) => window.sinder.newWindow(location), {
+      connectionId: connection.id,
+      path: remote,
+    });
+    await expect.poll(() => f.app.windows().length).toBe(2);
+    const second = f.app.windows().find((page) => page !== f.page)!;
+    const report = second.getByRole("option", {
+      name: "report.txt",
+      exact: true,
+    });
+    await report.click();
+    await second
+      .getByRole("option", { name: "Assets", exact: true })
+      .click({ modifiers: [modifier] });
+    await report.dispatchEvent("dragstart", {
+      dataTransfer: await second.evaluateHandle(() => new DataTransfer()),
+    });
+    await expect
+      .poll(() => f.app.evaluate(() => (globalThis as any).__promiseCount))
+      .toBe(2);
+    await expect
+      .poll(
+        async () =>
+          JSON.parse(
+            await f.app.evaluate(() =>
+              (globalThis as any).__promiseReceiver.results(),
+            ),
+          ),
+        { timeout: 30000 },
+      )
+      .toHaveLength(2);
+    const results = JSON.parse(
+      await f.app.evaluate(() =>
+        (globalThis as any).__promiseReceiver.results(),
+      ),
+    );
+    expect(results.every((result: { error: string }) => !result.error)).toBe(
+      true,
+    );
+    expect(
+      await fs.readFile(path.join(destination, "report.txt"), "utf8"),
+    ).toContain("Downloaded after dropping");
+    expect(
+      await fs.readFile(path.join(destination, "Assets", "nested.txt"), "utf8"),
+    ).toBe("Nested remote file\n");
+    expect(
+      await fs.readFile(path.join(remote, "report.txt"), "utf8"),
+    ).toContain("Downloaded after dropping");
+    expect(
+      (await fs.readdir(destination)).filter((name) =>
+        name.startsWith(".sinder-promise-"),
+      ),
+    ).toHaveLength(0);
+    await expect(second.getByRole("dialog")).toHaveCount(0);
+
+    // The native text representation also preserves remote source locations
+    // when a drag is dropped into another Sinder window.
+    const payload = await f.app.evaluate(
+      () => (globalThis as any).__promisePayload as string,
+    );
+    await f.page.locator(".file-area").evaluate((element, payload) => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData("text/plain", payload);
+      element.dispatchEvent(
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer,
+        }),
+      );
+    }, payload);
+    await expect(
+      f.page.getByRole("option", { name: "report.txt", exact: true }),
+    ).toBeVisible();
+    expect(
+      await fs.readFile(path.join(f.home, "report.txt"), "utf8"),
+    ).toContain("Downloaded after dropping");
+
+    // A receiver-provided destination that already exists must not be replaced.
+    await fs.writeFile(
+      path.join(destination, "report.txt"),
+      "Keep existing file\n",
+    );
+    await report.click();
+    await f.app.evaluate(() => {
+      (globalThis as any).__promiseCount = 0;
+    });
+    await report.dispatchEvent("dragstart", {
+      dataTransfer: await second.evaluateHandle(() => new DataTransfer()),
+    });
+    await expect
+      .poll(() => f.app.evaluate(() => (globalThis as any).__promiseCount))
+      .toBe(1);
+    await expect
+      .poll(async () =>
+        JSON.parse(
+          await f.app.evaluate(() =>
+            (globalThis as any).__promiseReceiver.results(),
+          ),
+        ),
+      )
+      .toMatchObject([{ error: expect.any(String) }]);
+    const collision = JSON.parse(
+      await f.app.evaluate(() =>
+        (globalThis as any).__promiseReceiver.results(),
+      ),
+    );
+    expect(collision[0].error.length).toBeGreaterThan(0);
+    expect(
+      await fs.readFile(path.join(destination, "report.txt"), "utf8"),
+    ).toBe("Keep existing file\n");
+    await expect(second.getByRole("alert")).toBeVisible();
+    expect(
+      (await fs.readdir(destination)).filter((name) =>
+        name.startsWith(".sinder-promise-"),
+      ),
+    ).toHaveLength(0);
+
+    // A file removed on the server after listing reports failure to Finder.
+    await fs.unlink(path.join(remote, "report.txt"));
+    await f.app.evaluate(() => {
+      (globalThis as any).__promiseCount = 0;
+    });
+    await report.dispatchEvent("dragstart", {
+      dataTransfer: await second.evaluateHandle(() => new DataTransfer()),
+    });
+    await expect
+      .poll(() => f.app.evaluate(() => (globalThis as any).__promiseCount))
+      .toBe(1);
+    await expect
+      .poll(async () =>
+        JSON.parse(
+          await f.app.evaluate(() =>
+            (globalThis as any).__promiseReceiver.results(),
+          ),
+        ),
+      )
+      .toHaveLength(1);
+    const missing = JSON.parse(
+      await f.app.evaluate(() =>
+        (globalThis as any).__promiseReceiver.results(),
+      ),
+    );
+    expect(missing[0].error.length).toBeGreaterThan(0);
+    expect(
+      await fs.readFile(path.join(destination, "report.txt"), "utf8"),
+    ).toBe("Keep existing file\n");
+  } finally {
     await f.close();
     await server.close();
   }

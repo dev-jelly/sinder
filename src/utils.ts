@@ -33,6 +33,7 @@ export function shortcut(platform: string, keys: string) {
     : keys
         .replace(/⌘\s*/g, "Ctrl+")
         .replace(/⇧\s*/g, "Shift+")
+        .replace(/⌥\s*/g, "Alt+")
         .replaceAll("⌫", "Backspace");
 }
 export const kindLabel = (entry: Entry) =>

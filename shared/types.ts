@@ -94,7 +94,16 @@ export type EditSession = {
   backupCount: number;
   backupLocations: Location[];
 };
+export type FileClipboard = { source: Location[]; move: boolean };
+export type ExternalExport = { id: string; names: string[] };
+export type OpenResult = {
+  kind: "local" | "edit" | "copy";
+  localPath?: string;
+};
 export type Bootstrap = {
+  initialLocation?: Location;
+  restoreWorkspace: boolean;
+  clipboard: FileClipboard | null;
   connections: Connection[];
   profiles: Profile[];
   bookmarks: Bookmark[];
@@ -111,7 +120,17 @@ export interface SinderAPI {
   rename(location: Location, name: string): Promise<void>;
   trash(locations: Location[]): Promise<void>;
   preview(location: Location): Promise<Preview>;
-  open(location: Location): Promise<void>;
+  open(location: Location): Promise<OpenResult>;
+  newWindow(location?: Location): Promise<void>;
+  closeWindow(): Promise<void>;
+  setClipboard(value: FileClipboard | null): Promise<void>;
+  onClipboard(callback: (value: FileClipboard | null) => void): () => void;
+  onNewWindow(callback: () => void): () => void;
+  prepareExport(source: Location[]): Promise<ExternalExport>;
+  startDrag(exportId: string): void;
+  startLocalDrag(paths: string[]): void;
+  startRemoteDrag(entries: { location: Location; directory: boolean }[]): void;
+  onDragError(callback: (message: string) => void): () => void;
   reveal(location: Location): Promise<void>;
   connect(profile: Profile, credentials: Credentials): Promise<Connection>;
   cancelConnection(id: string): Promise<CancelConnectionResult>;
