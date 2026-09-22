@@ -29,6 +29,6 @@ npm run release:mac
 
 이 명령은 자격증명을 검증한 뒤 앱을 빌드·서명·공증하고 공증 티켓을 앱에 첨부합니다. Hardened Runtime과 JIT 권한을 사용합니다. `codesign`, `stapler`, Gatekeeper 검사 중 하나라도 실패하면 완료로 처리하지 않습니다.
 
-결과는 `release/Sinder-<버전>-arm64-mac.zip`과 `release/SHA256SUMS.txt`입니다. 이 명령은 GitHub에 자동 게시하지 않습니다. Finder 양방향 드래그와 설치 후 실행을 확인한 다음, 해당 소스 커밋을 태그하고 두 파일을 GitHub Release에 첨부합니다. Intel Mac·Windows 배포는 해당 환경의 빌드와 실기 확인이 끝난 뒤 별도로 추가합니다.
+결과는 `release/Sinder-<버전>-arm64-mac.zip`과 `release/SHA256SUMS.txt`입니다. 이 명령은 GitHub에 자동 게시하지 않습니다. 해당 소스 커밋을 태그하고 두 파일을 GitHub Release에 첨부합니다. 실기 확인이 남은 버전은 GitHub의 prerelease로 표시하고, 미검증 동작을 README와 릴리스 안내에 명시합니다. 정식 배포 전에는 Finder 양방향 드래그와 설치 후 실행을 확인합니다. Intel Mac·Windows 배포는 해당 환경의 빌드와 실기 확인이 끝난 뒤 별도로 추가합니다.
 
 발급·공증 참고: [Apple의 공증 절차](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution), [Electron 공증과 키체인 인증](https://github.com/electron/notarize).
