@@ -32,3 +32,9 @@ npm run release:mac
 결과는 `release/Sinder-<버전>-arm64-mac.zip`과 `release/SHA256SUMS.txt`입니다. 이 명령은 GitHub에 자동 게시하지 않습니다. 해당 소스 커밋을 태그하고 두 파일을 GitHub Release에 첨부합니다. 실기 확인이 남은 버전은 GitHub의 prerelease로 표시하고, 미검증 동작을 README와 릴리스 안내에 명시합니다. 정식 배포 전에는 Finder 양방향 드래그와 설치 후 실행을 확인합니다. Intel Mac·Windows 배포는 해당 환경의 빌드와 실기 확인이 끝난 뒤 별도로 추가합니다.
 
 발급·공증 참고: [Apple의 공증 절차](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution), [Electron 공증과 키체인 인증](https://github.com/electron/notarize).
+
+## 잠금 해제 후에도 `keychainLocked`가 나오는 경우
+
+키체인 접근의 열린 자물쇠와 별개로, 백그라운드 세션의 배포 도구가 키체인을 잠긴 상태로 볼 수 있습니다. 실제 배포 환경에서 `launchctl managername`이 `Background`인 작업은 실패했고, 동일한 사용자 계정의 GUI 로그인 세션에서 실행한 공증 자격증명 검증은 통과했습니다.
+
+Mac의 로그인 세션에 속한 터미널에서 `security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"`를 실행하고, 같은 세션에서 배포 명령을 실행하세요. 자동화도 해당 사용자의 GUI 로그인 세션에서 실행해야 합니다. 키체인 암호를 명령 인수·환경 변수·저장소에 넣거나, 잠금 정책을 끄는 방식으로 해결하지 않습니다.
