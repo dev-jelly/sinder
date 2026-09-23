@@ -1208,7 +1208,7 @@ test("remote documents open as local copies and prepared remote exports preserve
   }
 });
 
-test("macOS remote row drag fulfills real AppKit file promises through SSH", async () => {
+test("macOS remote row drag fulfills receiver-coordinated file promises through SSH", async () => {
   test.skip(process.platform !== "darwin", "macOS file-promise protocol");
   const server = await startSshd();
   const f = await fixture();
@@ -1303,9 +1303,10 @@ test("macOS remote row drag fulfills real AppKit file promises through SSH", asy
         (globalThis as any).__promiseReceiver.results(),
       ),
     );
-    expect(results.every((result: { error: string }) => !result.error)).toBe(
-      true,
-    );
+    expect(results.map((result: { error: string }) => result.error)).toEqual([
+      "",
+      "",
+    ]);
     expect(
       await fs.readFile(path.join(destination, "report.txt"), "utf8"),
     ).toContain("Downloaded after dropping");

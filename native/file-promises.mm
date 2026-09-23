@@ -26,6 +26,9 @@ static NSError *Failure(NSString *message) {
   return [NSError errorWithDomain:@"app.sinder.file-promise" code:1
                         userInfo:@{NSLocalizedDescriptionKey: message}];
 }
+static void Trace(const char *message) {
+  if (getenv("SINDER_DRAG_DIAGNOSTICS")) fprintf(stderr, "[Sinder drag] %s\n", message);
+}
 static std::string String(napi_env env, napi_value value) {
   size_t length = 0;
   if (napi_get_value_string_utf8(env, value, nullptr, 0, &length) != napi_ok)
@@ -75,6 +78,7 @@ static void FinishCopy(napi_env env, napi_value callback, void *context, void *d
 @end
 
 @implementation SinderPromiseProvider
+- (void)dealloc { Trace("provider released"); }
 - (NSArray<NSPasteboardType> *)writableTypesForPasteboard:(NSPasteboard *)pasteboard {
   NSArray *types = [super writableTypesForPasteboard:pasteboard];
   return self.internalPayload.length ? [types arrayByAddingObject:NSPasteboardTypeString] : types;
@@ -118,32 +122,28 @@ static napi_value Complete(napi_env env, napi_callback_info info) {
   napi_create_threadsafe_function(env, nullptr, nullptr, resource, 0, 1,
       nullptr, nullptr, nullptr, FinishCopy, &finished);
   napi_unref_threadsafe_function(env, finished);
-  // Coordinate with Finder without blocking Electron's main thread. Copy into
-  // our own temporary directory, then publish a complete file without replacing
-  // an existing destination. Cleanup only ever touches this owned directory.
+  // The receiver already coordinates this destination until completion runs.
+  // Coordinating it again from this queue would wait on our own completion.
+  // Use the supplied URL directly, staging in an owned directory so publishing
+  // is atomic and never replaces an existing destination.
   [delivery->owner.queue addOperationWithBlock:^{
-    NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
-    __block NSError *writeError = nil;
-    NSError *coordinationError = nil;
-    [coordinator coordinateWritingItemAtURL:destination options:0 error:&coordinationError
-        byAccessor:^(NSURL *target) {
-      NSFileManager *manager = NSFileManager.defaultManager;
-      std::string pattern = [[[target URLByDeletingLastPathComponent]
-          URLByAppendingPathComponent:@".sinder-promise-XXXXXX"].path fileSystemRepresentation];
-      char *created = mkdtemp(pattern.data());
-      if (!created) {
-        writeError = Failure(@"Cannot create a temporary folder in the destination.");
-        return;
-      }
+    NSError *writeError = nil;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    std::string pattern = [[[destination URLByDeletingLastPathComponent]
+        URLByAppendingPathComponent:@".sinder-promise-XXXXXX"].path fileSystemRepresentation];
+    char *created = mkdtemp(pattern.data());
+    if (!created) {
+      writeError = Failure(@"Cannot create a temporary folder in the destination.");
+    } else {
       NSURL *temporary = [NSURL fileURLWithFileSystemRepresentation:created isDirectory:YES relativeToURL:nil];
       NSURL *staged = [temporary URLByAppendingPathComponent:@"item"];
       if ([manager copyItemAtURL:sourceURL toURL:staged error:&writeError] &&
-          renamex_np(staged.fileSystemRepresentation, target.fileSystemRepresentation, RENAME_EXCL) != 0)
+          renamex_np(staged.fileSystemRepresentation, destination.fileSystemRepresentation, RENAME_EXCL) != 0)
         writeError = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
       [manager removeItemAtURL:temporary error:nil];
-    }];
-    completion(writeError ?: coordinationError);
-    auto result = new CompletionResult{deferred, writeError ?: coordinationError};
+    }
+    completion(writeError);
+    auto result = new CompletionResult{deferred, writeError};
     if (napi_call_threadsafe_function(finished, result, napi_tsfn_nonblocking) != napi_ok) delete result;
     napi_release_threadsafe_function(finished, napi_tsfn_release);
   }];
@@ -174,9 +174,11 @@ static void Request(napi_env env, napi_value callback, void *context, void *data
 
 @implementation SinderPromiseOwner
 - (void)dealloc {
+  Trace("owner released");
   if (_callback) napi_release_threadsafe_function(_callback, napi_tsfn_release);
 }
 - (NSString *)filePromiseProvider:(NSFilePromiseProvider *)provider fileNameForType:(NSString *)type {
+  Trace("receiver requested filename");
   return ((SinderPromiseProvider *)provider).filename;
 }
 - (NSOperationQueue *)operationQueueForFilePromiseProvider:(NSFilePromiseProvider *)provider {
@@ -184,11 +186,18 @@ static void Request(napi_env env, napi_value callback, void *context, void *data
 }
 - (void)filePromiseProvider:(NSFilePromiseProvider *)provider writePromiseToURL:(NSURL *)url
          completionHandler:(void (^)(NSError *))completion {
+  Trace("receiver requested file contents");
   auto delivery = new Delivery{self, url, completion, ((SinderPromiseProvider *)provider).index};
   if (napi_call_threadsafe_function(self.callback, delivery, napi_tsfn_nonblocking) != napi_ok) {
     completion(Failure(@"Sinder is no longer available."));
     delete delivery;
   }
+}
+- (void)draggingSession:(NSDraggingSession *)session willBeginAtPoint:(NSPoint)point {
+  Trace("session began");
+}
+- (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)point operation:(NSDragOperation)operation {
+  Trace(operation == NSDragOperationNone ? "session cancelled" : "session accepted");
 }
 - (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
   // Finder receives copies. Sinder reads the text payload for internal moves.
@@ -278,9 +287,9 @@ static napi_value StartDrag(napi_env env, napi_callback_info info) {
 static NSMutableArray *testResults = [NSMutableArray new];
 static NSMutableArray *testObjects = [NSMutableArray new];
 // Compile only into the separate test addon, never included in the app bundle.
-// Verify that AppKit recognizes the promised types, then invoke the delegate
-// request a real drop receiver makes. OS pointer transfer is a separate manual
-// check; a pasteboard alone does not establish a system drag session.
+// Mirror the receiver's coordinated write contract, including retaining the
+// coordination until the asynchronous provider completion fires. Calling the
+// delegate without that outer coordination misses nested-coordination deadlocks.
 static napi_value ReceiveForTest(napi_env env, napi_callback_info info) {
   napi_value args[4];
   size_t count = 4;
@@ -297,11 +306,24 @@ static napi_value ReceiveForTest(napi_env env, napi_callback_info info) {
   for (SinderPromiseProvider *provider in providers) {
     NSURL *url = [destination URLByAppendingPathComponent:provider.filename];
     [queue addOperationWithBlock:^{
-      [provider.owner filePromiseProvider:provider writePromiseToURL:url completionHandler:^(NSError *error) {
-        @synchronized(testResults) {
-          [testResults addObject:@{@"path": url.path ?: @"", @"error": error.localizedDescription ?: @""}];
-        }
+      NSFileCoordinator *receiverCoordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+      NSError *coordinationError = nil;
+      __block NSError *resultError = nil;
+      [receiverCoordinator coordinateWritingItemAtURL:url options:0 error:&coordinationError
+          byAccessor:^(NSURL *target) {
+        dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+        __block NSError *deliveryError = nil;
+        [provider.owner filePromiseProvider:provider writePromiseToURL:target completionHandler:^(NSError *error) {
+          deliveryError = error;
+          dispatch_semaphore_signal(finished);
+        }];
+        if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)) != 0)
+          resultError = Failure(@"Timed out while the receiver held destination coordination.");
+        else resultError = deliveryError;
       }];
+      @synchronized(testResults) {
+        [testResults addObject:@{@"path": url.path ?: @"", @"error": (resultError ?: coordinationError).localizedDescription ?: @""}];
+      }
     }];
   }
   napi_value result;
