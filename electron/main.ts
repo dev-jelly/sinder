@@ -37,6 +37,8 @@ import {
   startFilePromises,
   activeFilePromises,
   waitForFilePromises,
+  setFileDragRegions,
+  preventDragWindowOrdering,
 } from "./file-promises.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -364,6 +366,15 @@ if (primaryInstance)
           return { id, names: files.map((file) => path.basename(file)) };
         },
       );
+      ipcMain.on("files:drag-regions", (event, raw) => {
+        const window = trusted(event);
+        if (!window || process.platform !== "darwin") return;
+        const result = z.array(z.object({
+          x: z.number().finite().nonnegative(), y: z.number().finite().nonnegative(),
+          width: z.number().finite().positive(), height: z.number().finite().positive(),
+        })).max(10000).safeParse(raw);
+        if (result.success) setFileDragRegions(window, result.data);
+      });
       ipcMain.on("files:drag-remote", (event, raw) => {
         const window = trusted(event);
         if (!window) return;
@@ -432,6 +443,7 @@ if (primaryInstance)
                 "일반 파일과 폴더만 외부로 드래그할 수 있습니다.",
               );
           }
+          preventDragWindowOrdering();
           event.sender.startDrag({
             file: files[0],
             files,
@@ -456,6 +468,7 @@ if (primaryInstance)
             !prepared.files.every(existsSync)
           )
             throw new Error("드래그할 파일을 다시 준비해 주세요.");
+          preventDragWindowOrdering();
           event.sender.startDrag({
             file: prepared.files[0],
             files: prepared.files,

@@ -9,6 +9,8 @@ const deliveries = new Set<Promise<void>>();
 export const activeFilePromises = () => deliveries.size;
 export const waitForFilePromises = () => Promise.allSettled([...deliveries]);
 type NativePromises = {
+  setDragRegions(handle: Buffer, regions: number[][]): void;
+  preventWindowOrdering(): void;
   startDrag(
     handle: Buffer,
     entries: { name: string; directory: boolean }[],
@@ -22,6 +24,16 @@ const native: NativePromises | null =
         "../../native/build/Release/sinder_file_promises.node",
       )
     : null;
+
+export function setFileDragRegions(window: BrowserWindow, regions: { x: number; y: number; width: number; height: number }[]) {
+  const zoom = window.webContents.getZoomFactor();
+  native?.setDragRegions(window.getNativeWindowHandle(),
+    regions.map(({ x, y, width, height }) => [x * zoom, y * zoom, width * zoom, height * zoom]));
+}
+
+export function preventDragWindowOrdering() {
+  native?.preventWindowOrdering();
+}
 
 export function startFilePromises(
   window: BrowserWindow,

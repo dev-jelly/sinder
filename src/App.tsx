@@ -41,6 +41,7 @@ import type {
   TransferRequest,
 } from "../shared/types";
 import { ConnectionDialog } from "./ConnectionDialog";
+import { useBackgroundDrag } from "./background-drag";
 import { RemoteEditsPanel } from "./RemoteEditsPanel";
 import type { EditSession } from "../shared/types";
 import { FolderTree } from "./FolderTree";
@@ -68,6 +69,7 @@ import {
 
 export function App() {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
+  useBackgroundDrag(boot?.platform);
   const [bootError, setBootError] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);

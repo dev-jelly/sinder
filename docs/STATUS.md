@@ -2,6 +2,15 @@
 
 2026-09-24. 현재 버전은 0.5.2이다. 플랫폼 범위는 **macOS 우선, Windows도 지원할 구조**다.
 
+## 미배포: macOS 비활성 창의 파일 드래그 (2026-09-28)
+
+- 파일을 누르는 순간 창이 앞으로 올라와 목적지를 덮는 동작을 개선한다. 파일 영역에서 AppKit의 창 활성화를 마우스 놓기까지 지연하고, 실제 네이티브 드래그가 시작되면 해당 활성화를 취소한다. 일반 클릭·도구 모음·입력창은 기존 창 활성화 동작을 유지한다.
+- 화면에 보이는 파일 영역만 전달하며 스크롤, 폴더 이동, 창 크기, 메뉴·대화상자를 반영한다. 영역과 네이티브 처리 상태는 창별로 분리한다. macOS 이외의 플랫폼에는 네이티브 모듈을 로드하지 않는다.
+- Electron의 해당 창에 속한 NSView 인스턴스에만 동적 하위 클래스를 적용한다. Chromium·NSView의 공유 클래스 메서드를 변경하지 않고, 영역 밖 이벤트는 원래 구현으로 전달한다.
+- 근거: Apple의 [shouldDelayWindowOrdering](https://developer.apple.com/documentation/appkit/nsview/shoulddelaywindowordering(for:)) 및 [preventWindowOrdering](https://developer.apple.com/documentation/appkit/nsapplication/preventwindowordering()) 계약. Electron 업데이트 시 네이티브 hit-test와 창 활성화 회귀 검사를 유지한다.
+- 단위·실제 SSH 테스트 48개와 Electron 시나리오 12개가 통과했다. 추가 시나리오는 실제 NSView hit-test를 통해 파일 영역의 첫 마우스 수락·활성화 지연, Control 클릭 제외, 확대 배율, 도구 모음, 스크롤, 대화상자, 빈 폴더 이동, 서로 다른 창의 영역 분리를 검사한다. 전체 빌드도 통과했다.
+- 이번 변경의 실제 Finder 중첩 창 드래그는 추가 실기 확인이 필요하다. 현재 컴퓨터 제어 도구는 Finder 창을 찾지 못했다(`cgWindowNotFound`).
+
 ## 0.5.2 Finder 복사 멈춤 수정
 
 - Finder 수신 측이 유지하는 파일 쓰기 조정 안에서 Sinder가 같은 목적지를 다시 조정해 완료 콜백과 서로 기다리던 문제를 수정했다. 수신 측이 제공한 URL에 직접 전달하며 임시 폴더·원자적 게시·기존 파일 보호는 유지한다.

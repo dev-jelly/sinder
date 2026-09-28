@@ -1420,3 +1420,64 @@ test("macOS remote row drag fulfills receiver-coordinated file promises through 
     await server.close();
   }
 });
+
+test("macOS background drag policy follows visible files, scrolling, dialogs and independent windows", async () => {
+  test.skip(process.platform !== "darwin");
+  const f = await fixture();
+  try {
+    const probe = async (point: { x: number; y: number }, control = false, windowIndex = 0) =>
+      f.app.evaluate(({ app, BrowserWindow }, { point, control, windowIndex }) => {
+        const { createRequire } = process.getBuiltinModule("node:module");
+        const require = createRequire(`${app.getAppPath()}/package.json`);
+        const native = require("./native/build/Release/sinder_file_promises_test.node");
+        const window = BrowserWindow.getAllWindows().sort((a, b) => a.id - b.id)[windowIndex];
+        const zoom = window.webContents.getZoomFactor();
+        return native.inspectWindowOrdering(window.getNativeWindowHandle(), point.x * zoom, point.y * zoom, control);
+      }, { point, control, windowIndex });
+    const file = f.page.getByRole("option", { name: "Project notes.md", exact: true });
+    const box = (await file.boundingBox())!;
+    const point = { x: box.x + 40, y: box.y + box.height / 2 };
+    await expect.poll(() => probe(point)).toEqual({ delaysOrdering: true, acceptsFirstMouse: true });
+    expect((await probe(point, true)).delaysOrdering).toBe(false);
+    expect((await probe({ x: box.x + 40, y: 100 })).delaysOrdering).toBe(false);
+
+    await f.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1.25));
+    await expect.poll(async () => {
+      const zoomed = (await file.boundingBox())!;
+      return (await probe({ x: zoomed.x + 20, y: zoomed.y + zoomed.height / 2 })).delaysOrdering;
+    }).toBe(true);
+    await f.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
+    await expect.poll(() => probe(point)).toEqual({ delaysOrdering: true, acceptsFirstMouse: true });
+
+    await f.page.getByRole("button", { name: "SSH 연결 추가", exact: true }).click();
+    await expect(f.page.getByRole("dialog")).toBeVisible();
+    await expect.poll(async () => (await probe(point)).delaysOrdering).toBe(false);
+    await f.page.keyboard.press("Escape");
+    await expect.poll(async () => (await probe(point)).delaysOrdering).toBe(true);
+
+    // A second, empty location must not inherit the first window's regions.
+    const empty = path.join(f.home, "Empty");
+    await fs.mkdir(empty);
+    await f.page.evaluate((path) => window.sinder.newWindow({ connectionId: "local", path }), empty);
+    await expect.poll(() => f.app.windows().length).toBe(2);
+    const second = f.app.windows().find((page) => page !== f.page)!;
+    await expect(second.getByText("비어 있는 폴더", { exact: true })).toBeVisible();
+    expect((await probe(point, false, 1)).delaysOrdering).toBe(false);
+    expect((await probe(point)).delaysOrdering).toBe(true);
+
+    // Lots of rows exercise clipping and scroll updates, then navigation clears
+    // all former hit regions even when the new directory has no file entries.
+    await Promise.all(Array.from({ length: 45 }, (_, i) => fs.writeFile(path.join(f.home, `Row-${i}.txt`), "test")));
+    await f.page.getByRole("button", { name: /새로 고침/ }).click();
+    await expect(f.page.getByRole("option", { name: "Row-44.txt", exact: true })).toBeAttached();
+    await f.page.getByRole("option", { name: "Row-44.txt", exact: true }).scrollIntoViewIfNeeded();
+    const last = (await f.page.getByRole("option", { name: "Row-44.txt", exact: true }).boundingBox())!;
+    await expect.poll(async () => (await probe({ x: last.x + 40, y: last.y + last.height / 2 })).delaysOrdering).toBe(true);
+    expect((await probe({ x: last.x + 40, y: 100 })).delaysOrdering).toBe(false);
+    await f.page.getByRole("option", { name: "Empty", exact: true }).dblclick();
+    await expect(f.page.getByText("비어 있는 폴더", { exact: true })).toBeVisible();
+    await expect.poll(async () => (await probe(point)).delaysOrdering).toBe(false);
+  } finally {
+    await f.close();
+  }
+});

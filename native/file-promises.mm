@@ -4,6 +4,7 @@
 #include <string>
 #include <stdio.h>
 #include <errno.h>
+#include "window-ordering.h"
 
 #ifdef SINDER_NATIVE_TEST
 #define SinderPromiseOwner SinderTestPromiseOwner
@@ -275,6 +276,7 @@ static napi_value StartDrag(napi_env env, napi_callback_info info) {
     [items addObject:item];
   }
   @try {
+    [NSApp preventWindowOrdering];
     [view beginDraggingSessionWithItems:items event:event source:((SinderPromiseProvider *)providers[0]).owner];
   } @catch (NSException *exception) {
     napi_throw_error(env, nullptr, exception.reason.UTF8String);
@@ -340,6 +342,7 @@ static napi_value ResultsForTest(napi_env env, napi_callback_info info) {
 #endif
 
 static napi_value Init(napi_env env, napi_value exports) {
+  RegisterWindowOrdering(env, exports);
   napi_value start;
   napi_create_function(env, "startDrag", NAPI_AUTO_LENGTH, StartDrag, nullptr, &start);
   napi_set_named_property(env, exports, "startDrag", start);

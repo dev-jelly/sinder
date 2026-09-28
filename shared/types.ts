@@ -128,6 +128,7 @@ export interface SinderAPI {
   onNewWindow(callback: () => void): () => void;
   prepareExport(source: Location[]): Promise<ExternalExport>;
   startDrag(exportId: string): void;
+  setFileDragRegions(regions: { x: number; y: number; width: number; height: number }[]): void;
   startLocalDrag(paths: string[]): void;
   startRemoteDrag(entries: { location: Location; directory: boolean }[]): void;
   onDragError(callback: (message: string) => void): () => void;

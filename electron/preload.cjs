@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("sinder", {
   prepareExport: (source) => invoke("files:prepare-export", source),
   startDrag: (id) => ipcRenderer.send("files:start-drag", id),
   startLocalDrag: (paths) => ipcRenderer.send("files:drag-local", paths),
+  setFileDragRegions: (regions) => ipcRenderer.send("files:drag-regions", regions),
   startRemoteDrag: (entries) => ipcRenderer.send("files:drag-remote", entries),
   onDragError: (callback) => subscribe("files:drag-error", callback),
   list: (location) => invoke("files:list", location),
