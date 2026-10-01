@@ -169,6 +169,33 @@ test("keyboard and mouse history controls navigate the active folder", async () 
   }
 });
 
+test("a held mouse history button and its native command navigate only once", async () => {
+  const f = await fixture();
+  try {
+    await fs.mkdir(path.join(f.home, "Projects", "Nested"));
+    await f.page.getByRole("option", { name: "Projects", exact: true }).dblclick();
+    await f.page.getByRole("option", { name: "Nested", exact: true }).dblclick();
+    const currentPath = f.page.locator(".pane .footer-path");
+    await expect(currentPath).toHaveText(/[/\\]Nested$/);
+    const mouse = await f.page.context().newCDPSession(f.page);
+    const input = { x: 600, y: 350, button: "back", clickCount: 1 } as const;
+    await mouse.send("Input.dispatchMouseEvent", { type: "mousePressed", ...input });
+    await f.app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].emit(
+        "app-command", { preventDefault() {} }, "browser-backward",
+      );
+    });
+    await expect(currentPath).toHaveText(/[/\\]Projects$/);
+    // A single real press can last longer than the short duplicate-event window.
+    await f.page.waitForTimeout(150);
+    await mouse.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...input });
+    await f.page.waitForTimeout(100);
+    await expect(currentPath).toHaveText(/[/\\]Projects$/);
+  } finally {
+    await f.close();
+  }
+});
+
 test("local SSH config fills fields, imports disconnected locations and avoids duplicates", async () => {
   const f = await fixture();
   try {

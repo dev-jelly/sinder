@@ -127,6 +127,10 @@ export function App() {
   const transferStates = useRef(new Map<string, string>());
   const editStates = useRef(new Map<string, string>());
   const pendingNavigation = useRef<Location | null>(null);
+  const mouseHistoryGesture = useRef<{
+    direction: "back" | "forward";
+    nativeHandled: boolean;
+  } | null>(null);
   const lastHistoryInput = useRef<{
     direction: "back" | "forward";
     source: "keyboard" | "dom" | "native";
@@ -356,17 +360,20 @@ export function App() {
     direction: "back" | "forward",
     source: "keyboard" | "dom" | "native",
   ) {
+    if (modalOpen) return;
     const now = performance.now();
     const previous = lastHistoryInput.current;
     // Some mice deliver one press both as a DOM button and an OS app command.
     if (
       previous?.direction === direction &&
+      previous.source !== "keyboard" &&
+      source !== "keyboard" &&
       previous.source !== source &&
       now - previous.at < 80
     )
       return;
     lastHistoryInput.current = { direction, source, at: now };
-    if (!modalOpen) command(direction);
+    command(direction);
   }
   function addTab(location?: Location) {
     const destination = location ?? activePane?.location;
@@ -516,28 +523,49 @@ export function App() {
     const preventMouseHistory = (event: MouseEvent) => {
       if (mouseDirection(event)) event.preventDefault();
     };
+    const onMouseDown = (event: MouseEvent) => {
+      const direction = mouseDirection(event);
+      if (direction) {
+        event.preventDefault();
+        mouseHistoryGesture.current = { direction, nativeHandled: false };
+      }
+    };
     const onMouseUp = (event: MouseEvent) => {
       const direction = mouseDirection(event);
       if (direction) {
         event.preventDefault();
+        const gesture = mouseHistoryGesture.current;
+        mouseHistoryGesture.current = null;
+        // An OS command may arrive on press, long before the DOM release.
+        if (gesture?.direction === direction && gesture.nativeHandled) return;
         historyInput(direction, "dom");
       }
     };
+    const clearMouseHistory = () => { mouseHistoryGesture.current = null; };
     const offHistoryNavigation = window.sinder?.onHistoryNavigation(
-      (direction) => historyInput(direction, "native"),
+      (direction) => {
+        const gesture = mouseHistoryGesture.current;
+        if (gesture?.direction === direction) {
+          if (gesture.nativeHandled) return;
+          gesture.nativeHandled = true;
+        }
+        historyInput(direction, "native");
+      },
     );
     window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", preventMouseHistory, true);
+    window.addEventListener("mousedown", onMouseDown, true);
     window.addEventListener("mouseup", onMouseUp, true);
     window.addEventListener("auxclick", preventMouseHistory, true);
+    window.addEventListener("blur", clearMouseHistory);
     document.addEventListener("copy", onClipboard);
     document.addEventListener("cut", onClipboard);
     document.addEventListener("paste", onClipboard);
     return () => {
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", preventMouseHistory, true);
+      window.removeEventListener("mousedown", onMouseDown, true);
       window.removeEventListener("mouseup", onMouseUp, true);
       window.removeEventListener("auxclick", preventMouseHistory, true);
+      window.removeEventListener("blur", clearMouseHistory);
       offHistoryNavigation?.();
       document.removeEventListener("copy", onClipboard);
       document.removeEventListener("cut", onClipboard);
