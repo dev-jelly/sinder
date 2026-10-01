@@ -127,6 +127,11 @@ export function App() {
   const transferStates = useRef(new Map<string, string>());
   const editStates = useRef(new Map<string, string>());
   const pendingNavigation = useRef<Location | null>(null);
+  const lastHistoryInput = useRef<{
+    direction: "back" | "forward";
+    source: "keyboard" | "dom" | "native";
+    at: number;
+  } | null>(null);
   const activeTab = tabs.find((t) => t.id === tabId) ?? tabs[0];
   const activePane =
     activeTab?.panes.find((p) => p.id === activeTab.active) ??
@@ -347,6 +352,22 @@ export function App() {
   function command(c: Command) {
     if (activePane) paneRefs.current.get(activePane.id)?.command(c);
   }
+  function historyInput(
+    direction: "back" | "forward",
+    source: "keyboard" | "dom" | "native",
+  ) {
+    const now = performance.now();
+    const previous = lastHistoryInput.current;
+    // Some mice deliver one press both as a DOM button and an OS app command.
+    if (
+      previous?.direction === direction &&
+      previous.source !== source &&
+      now - previous.at < 80
+    )
+      return;
+    lastHistoryInput.current = { direction, source, at: now };
+    if (!modalOpen) command(direction);
+  }
   function addTab(location?: Location) {
     const destination = location ?? activePane?.location;
     if (!destination) return;
@@ -444,6 +465,10 @@ export function App() {
         }
         if (event.key === "Backspace") action = "trash";
         if (event.key === "ArrowUp") action = "up";
+        if (!event.altKey && !event.shiftKey && event.key === "ArrowLeft")
+          action = "back";
+        if (!event.altKey && !event.shiftKey && event.key === "ArrowRight")
+          action = "forward";
       } else if (event.altKey && event.key === "ArrowLeft") action = "back";
       else if (event.altKey && event.key === "ArrowRight") action = "forward";
       else if (event.altKey && event.key === "ArrowUp") action = "up";
@@ -468,7 +493,9 @@ export function App() {
         )
           return;
         event.preventDefault();
-        command(action);
+        if (action === "back" || action === "forward")
+          historyInput(action, "keyboard");
+        else command(action);
       }
     };
     const onClipboard = (event: ClipboardEvent) => {
@@ -484,12 +511,34 @@ export function App() {
       event.preventDefault();
       command(event.type as "copy" | "cut" | "paste");
     };
+    const mouseDirection = (event: MouseEvent) =>
+      event.button === 3 ? "back" : event.button === 4 ? "forward" : null;
+    const preventMouseHistory = (event: MouseEvent) => {
+      if (mouseDirection(event)) event.preventDefault();
+    };
+    const onMouseUp = (event: MouseEvent) => {
+      const direction = mouseDirection(event);
+      if (direction) {
+        event.preventDefault();
+        historyInput(direction, "dom");
+      }
+    };
+    const offHistoryNavigation = window.sinder?.onHistoryNavigation(
+      (direction) => historyInput(direction, "native"),
+    );
     window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", preventMouseHistory, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+    window.addEventListener("auxclick", preventMouseHistory, true);
     document.addEventListener("copy", onClipboard);
     document.addEventListener("cut", onClipboard);
     document.addEventListener("paste", onClipboard);
     return () => {
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", preventMouseHistory, true);
+      window.removeEventListener("mouseup", onMouseUp, true);
+      window.removeEventListener("auxclick", preventMouseHistory, true);
+      offHistoryNavigation?.();
       document.removeEventListener("copy", onClipboard);
       document.removeEventListener("cut", onClipboard);
       document.removeEventListener("paste", onClipboard);
@@ -1469,6 +1518,7 @@ export function App() {
               ["탭 닫기", "⌘ W"],
               ["분할 보기", "⌘ \\"],
               ["경로 입력", "⌘ L"],
+              ["뒤로 / 앞으로", "⌘ ← / ⌘ →"],
               ["폴더에서 검색", "⌘ F"],
               ["사이드바", "⌘ B"],
               ["정보 패널", "⌘ I"],

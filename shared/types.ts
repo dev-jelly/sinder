@@ -128,6 +128,9 @@ export interface SinderAPI {
   setClipboard(value: FileClipboard | null): Promise<void>;
   onClipboard(callback: (value: FileClipboard | null) => void): () => void;
   onNewWindow(callback: () => void): () => void;
+  onHistoryNavigation(
+    callback: (direction: "back" | "forward") => void,
+  ): () => void;
   prepareExport(source: Location[]): Promise<ExternalExport>;
   startDrag(exportId: string): void;
   setFileDragRegions(regions: { x: number; y: number; width: number; height: number }[]): void;

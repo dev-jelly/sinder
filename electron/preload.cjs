@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("sinder", {
   setClipboard: (value) => invoke("clipboard:set", value),
   onClipboard: (callback) => subscribe("clipboard:changed", callback),
   onNewWindow: (callback) => subscribe("window:new-requested", callback),
+  onHistoryNavigation: (callback) => subscribe("navigation:history", callback),
   prepareExport: (source) => invoke("files:prepare-export", source),
   startDrag: (id) => ipcRenderer.send("files:start-drag", id),
   startLocalDrag: (paths) => ipcRenderer.send("files:drag-local", paths),

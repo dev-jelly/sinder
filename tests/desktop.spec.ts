@@ -102,6 +102,73 @@ test("entering a file path shows only that file and can return to the full folde
   }
 });
 
+test("keyboard and mouse history controls navigate the active folder", async () => {
+  const f = await fixture();
+  try {
+    await fs.mkdir(path.join(f.home, "Projects", "Nested"));
+    const currentPath = f.page.locator(".pane .footer-path");
+    await f.page.getByRole("option", { name: "Projects", exact: true }).dblclick();
+    await expect(currentPath).toHaveText(/[/\\]Projects$/);
+    await f.page.getByRole("option", { name: "Nested", exact: true }).dblclick();
+    await expect(currentPath).toHaveText(/[/\\]Nested$/);
+
+    await f.page.keyboard.press(`${modifier}+ArrowLeft`);
+    await expect(currentPath).toHaveText(/[/\\]Projects$/);
+    await f.page.keyboard.press(`${modifier}+ArrowRight`);
+    await expect(currentPath).toHaveText(/[/\\]Nested$/);
+    await f.page.keyboard.press("Control+ArrowLeft");
+    await expect(currentPath).toHaveText(/[/\\]Projects$/);
+    await f.page.keyboard.press("Control+ArrowRight");
+    await expect(currentPath).toHaveText(/[/\\]Nested$/);
+
+    const mouse = await f.page.context().newCDPSession(f.page);
+    const clickHistoryButton = async (
+      button: "back" | "forward",
+      x = 600,
+    ) => {
+      const input = { x, y: 350, button, clickCount: 1 } as const;
+      await mouse.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...input,
+      });
+      await mouse.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...input,
+      });
+    };
+    await clickHistoryButton("back");
+    await expect(currentPath).toHaveText(/[/\\]Projects$/);
+    await clickHistoryButton("forward");
+    await expect(currentPath).toHaveText(/[/\\]Nested$/);
+
+    await f.app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.emit("app-command", { preventDefault() {} }, "browser-backward");
+    });
+    await expect(currentPath).toHaveText(/[/\\]Projects$/);
+    await f.app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.emit("app-command", { preventDefault() {} }, "browser-forward");
+    });
+    await expect(currentPath).toHaveText(/[/\\]Nested$/);
+    await f.page.getByRole("button", { name: "경로 입력", exact: true }).click();
+    await f.page.keyboard.press(`${modifier}+ArrowLeft`);
+    await expect(currentPath).toHaveText(/[/\\]Nested$/);
+    await f.page.keyboard.press("Escape");
+
+    await f.page.getByRole("button", { name: "분할 보기 (⌘\\)", exact: true }).click();
+    const left = f.page.locator(".pane").first();
+    const right = f.page.locator(".pane").last();
+    await right.getByRole("button", { name: "상위 폴더" }).click();
+    await expect(right.locator(".footer-path")).toHaveText(/[/\\]Projects$/);
+    await clickHistoryButton("back", 1100);
+    await expect(right.locator(".footer-path")).toHaveText(/[/\\]Nested$/);
+    await expect(left.locator(".footer-path")).toHaveText(/[/\\]Nested$/);
+  } finally {
+    await f.close();
+  }
+});
+
 test("local SSH config fills fields, imports disconnected locations and avoids duplicates", async () => {
   const f = await fixture();
   try {
