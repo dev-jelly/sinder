@@ -115,7 +115,9 @@ export type Bootstrap = {
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 export interface SinderAPI {
   bootstrap(): Promise<Bootstrap>;
-  list(location: Location): Promise<{ path: string; entries: Entry[] }>;
+  list(
+    location: Location,
+  ): Promise<{ path: string; entries: Entry[]; target?: string }>;
   mkdir(location: Location, name: string): Promise<void>;
   rename(location: Location, name: string): Promise<void>;
   trash(locations: Location[]): Promise<void>;

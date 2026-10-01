@@ -4,6 +4,7 @@ import { locationKey } from "./utils";
 export type PaneState = {
   id: string;
   location: Location;
+  fileTarget?: string;
   history: Location[];
   cursor: number;
 };
@@ -19,9 +20,16 @@ export function newTab(location: Location): Tab {
 }
 
 export function navigatePane(pane: PaneState, location: Location): PaneState {
-  if (locationKey(pane.location) === locationKey(location)) return pane;
+  if (locationKey(pane.location) === locationKey(location))
+    return pane.fileTarget ? { ...pane, fileTarget: undefined } : pane;
   const history = [...pane.history.slice(0, pane.cursor + 1), location];
-  return { ...pane, location, history, cursor: history.length - 1 };
+  return {
+    ...pane,
+    location,
+    fileTarget: undefined,
+    history,
+    cursor: history.length - 1,
+  };
 }
 
 export function reconnectPane(

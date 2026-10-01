@@ -140,6 +140,7 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
   const menuRef = useRef<HTMLDivElement>(null);
   const sequence = useRef(0);
   const loadedLocation = useRef("");
+  const autoSelectedFile = useRef<string | null>(null);
   const listing = useRef(false);
   const current = useRef(props);
   current.current = props;
@@ -164,8 +165,16 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
           current.current.onChange({
             ...s,
             location,
+            fileTarget: result.target,
             history: s.history.map((h, i) => (i === s.cursor ? location : h)),
           });
+        } else {
+          const s = current.current.state;
+          if (
+            s.fileTarget &&
+            !result.entries.some((entry) => entry.path === s.fileTarget)
+          )
+            current.current.onChange({ ...s, fileTarget: undefined });
         }
       } catch (err) {
         if (
@@ -240,7 +249,8 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
       entries
         .filter(
           (e) =>
-            (hidden || !e.hidden) &&
+            (hidden || !e.hidden || state.fileTarget === e.path) &&
+            (!state.fileTarget || e.path === state.fileTarget) &&
             e.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
         )
         .sort((a, b) => {
@@ -257,7 +267,7 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
                 : a[sort] - b[sort];
           return (descending ? -1 : 1) * comparison;
         }),
-    [entries, hidden, query, sort, descending],
+    [entries, hidden, query, sort, descending, state.fileTarget],
   );
   const visiblePaths = useMemo(
     () => visible.map((entry) => entry.path),
@@ -274,6 +284,22 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
     setSelection((previous) => pruneSelection(previous, visiblePaths));
   }, [visiblePaths]);
   useEffect(() => {
+    if (!state.fileTarget) {
+      autoSelectedFile.current = null;
+    } else if (!visiblePaths.includes(state.fileTarget)) {
+      autoSelectedFile.current = null;
+    } else if (
+      autoSelectedFile.current !== state.fileTarget
+    ) {
+      autoSelectedFile.current = state.fileTarget;
+      setSelection({
+        paths: [state.fileTarget],
+        anchor: state.fileTarget,
+        cursor: state.fileTarget,
+      });
+    }
+  }, [state.fileTarget, visiblePaths]);
+  useEffect(() => {
     if (active) props.onSelection(selectedEntries);
   }, [selectedEntries, active]);
   const locations = () =>
@@ -284,7 +310,12 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
   function history(delta: number) {
     const cursor = state.cursor + delta;
     if (cursor >= 0 && cursor < state.history.length)
-      props.onChange({ ...state, cursor, location: state.history[cursor] });
+      props.onChange({
+        ...state,
+        cursor,
+        location: state.history[cursor],
+        fileTarget: undefined,
+      });
   }
   async function open(entry: Entry) {
     const location = { ...state.location, path: entry.path };
@@ -292,7 +323,8 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
     else if (entry.kind === "symlink") {
       try {
         const result = await window.sinder.list(location);
-        navigate({ ...location, path: result.path });
+        if (result.target) props.onOpen(location);
+        else navigate({ ...location, path: result.path });
       } catch {
         props.onOpen(location);
       }
@@ -695,6 +727,17 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
             {connection?.kind === "ssh" ? "SSH" : "LOCAL"}
           </span>
         </span>
+        {state.fileTarget && (
+          <button
+            className="file-target-clear"
+            onClick={() => {
+              props.onChange({ ...state, fileTarget: undefined });
+              setSelection(emptySelection());
+            }}
+          >
+            전체 폴더 보기
+          </button>
+        )}
         <div className="folder-search">
           <MagnifyingGlass size={16} />
           <input
@@ -703,7 +746,11 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
             placeholder="이름으로 필터"
             title={`이 폴더의 파일 이름으로 필터 (${shortcut(props.platform, "⌘F")})`}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              if (state.fileTarget)
+                props.onChange({ ...state, fileTarget: undefined });
+              setQuery(e.target.value);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();

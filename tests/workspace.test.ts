@@ -54,6 +54,15 @@ test("revisiting the current location preserves the forward branch", () => {
   );
 });
 
+test("navigating away from a focused file clears the single-file view", () => {
+  const previous = { ...pane(), fileTarget: "/projects/note" };
+  assert.equal(navigatePane(previous, previous.location).fileTarget, undefined);
+  assert.equal(
+    navigatePane(previous, location("/elsewhere")).fileTarget,
+    undefined,
+  );
+});
+
 test("reconnecting an existing remote pane preserves its path and back/forward history", () => {
   const previous = pane();
   previous.location = location("/work/current", remote.id);
