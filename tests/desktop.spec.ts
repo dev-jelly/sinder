@@ -64,6 +64,30 @@ async function fixture() {
   };
 }
 
+test("entering a file path shows only that file and can return to the full folder", async () => {
+  const f = await fixture();
+  try {
+    await f.page.getByRole("button", { name: "경로 입력", exact: true }).click();
+    await f.page.getByRole("textbox", { name: "폴더 경로" }).fill(path.join(f.home, "Project notes.md"));
+    await f.page.getByRole("textbox", { name: "폴더 경로" }).press("Enter");
+    await expect(f.page.getByRole("option", { name: "Project notes.md", exact: true })).toBeVisible();
+    await expect(f.page.getByRole("option", { name: "Project notes.md", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(f.page.getByRole("option")).toHaveCount(1);
+    await expect(f.page.getByRole("button", { name: "전체 폴더 보기" })).toBeVisible();
+    await f.page.getByRole("button", { name: "새로 고침" }).click();
+    await expect(f.page.getByRole("option")).toHaveCount(1);
+    await f.page.getByRole("button", { name: "전체 폴더 보기" }).click();
+    await expect(f.page.getByRole("option", { name: "package.json", exact: true })).toBeVisible();
+    await f.page.getByRole("button", { name: "경로 입력", exact: true }).click();
+    await f.page.getByRole("textbox", { name: "폴더 경로" }).fill(path.join(f.home, ".hidden-config"));
+    await f.page.getByRole("textbox", { name: "폴더 경로" }).press("Enter");
+    await expect(f.page.getByRole("option", { name: ".hidden-config", exact: true })).toBeVisible();
+    await expect(f.page.getByRole("option")).toHaveCount(1);
+  } finally {
+    await f.close();
+  }
+});
+
 test("local SSH config fills fields, imports disconnected locations and avoids duplicates", async () => {
   const f = await fixture();
   try {

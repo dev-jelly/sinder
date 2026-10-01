@@ -33,6 +33,7 @@ import {
   type FileClipboard,
 } from "../shared/types.js";
 import { preview } from "./preview.js";
+import { listLocation } from "./list-location.js";
 import {
   startFilePromises,
   activeFilePromises,
@@ -245,10 +246,10 @@ if (primaryInstance)
       }));
       handle("files:list", locationSchema, async (location) => {
         const provider = connections.get(location.connectionId);
-        const p = await provider.realpath(
+        return listLocation(
+          provider,
           connections.resolve(location.connectionId, location.path),
         );
-        return { path: p, entries: await provider.list(p) };
       });
       handle(
         "files:mkdir",

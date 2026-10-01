@@ -123,6 +123,10 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [fileTarget, setFileTarget] = useState<{
+    folder: string;
+    path: string;
+  } | null>(null);
   const [view, setView] = useState<"list" | "grid">(() =>
     localStorage.getItem("sinder-view") === "grid" ? "grid" : "list",
   );
@@ -158,6 +162,12 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
           return;
         setEntries(result.entries);
         setError("");
+        if (result.target) {
+          setFileTarget({
+            folder: locationKey({ ...state.location, path: result.path }),
+            path: result.target,
+          });
+        }
         if (result.path !== state.location.path) {
           const s = current.current.state;
           const location = { ...s.location, path: result.path };
@@ -187,8 +197,9 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
   useEffect(() => {
     const key = locationKey(state.location);
     if (loadedLocation.current !== key) {
+      if (fileTarget?.folder !== key) setFileTarget(null);
       loadedLocation.current = key;
-      setSelection(emptySelection());
+      if (fileTarget?.folder !== key) setSelection(emptySelection());
       setQuery("");
       setEntries([]);
       setError("");
@@ -240,7 +251,10 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
       entries
         .filter(
           (e) =>
-            (hidden || !e.hidden) &&
+            (hidden || !e.hidden || fileTarget?.path === e.path) &&
+            (!fileTarget ||
+              fileTarget.folder !== locationKey(state.location) ||
+              e.path === fileTarget.path) &&
             e.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
         )
         .sort((a, b) => {
@@ -257,7 +271,7 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
                 : a[sort] - b[sort];
           return (descending ? -1 : 1) * comparison;
         }),
-    [entries, hidden, query, sort, descending],
+    [entries, hidden, query, sort, descending, fileTarget, state.location],
   );
   const visiblePaths = useMemo(
     () => visible.map((entry) => entry.path),
@@ -273,6 +287,18 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
   useEffect(() => {
     setSelection((previous) => pruneSelection(previous, visiblePaths));
   }, [visiblePaths]);
+  useEffect(() => {
+    if (
+      fileTarget?.folder === locationKey(state.location) &&
+      visiblePaths.includes(fileTarget.path)
+    ) {
+      setSelection({
+        paths: [fileTarget.path],
+        anchor: fileTarget.path,
+        cursor: fileTarget.path,
+      });
+    }
+  }, [fileTarget, state.location, visiblePaths]);
   useEffect(() => {
     if (active) props.onSelection(selectedEntries);
   }, [selectedEntries, active]);
@@ -695,6 +721,17 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
             {connection?.kind === "ssh" ? "SSH" : "LOCAL"}
           </span>
         </span>
+        {fileTarget?.folder === locationKey(state.location) && (
+          <button
+            className="file-target-clear"
+            onClick={() => {
+              setFileTarget(null);
+              setSelection(emptySelection());
+            }}
+          >
+            전체 폴더 보기
+          </button>
+        )}
         <div className="folder-search">
           <MagnifyingGlass size={16} />
           <input
@@ -703,7 +740,10 @@ export const Pane = forwardRef<PaneHandle, Props>(function Pane(props, ref) {
             placeholder="이름으로 필터"
             title={`이 폴더의 파일 이름으로 필터 (${shortcut(props.platform, "⌘F")})`}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setFileTarget(null);
+              setQuery(e.target.value);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();

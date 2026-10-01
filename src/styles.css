@@ -534,6 +534,14 @@ kbd {
   gap: 8px;
   flex-shrink: 0;
 }
+
+.file-target-clear {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .folder-search {
   display: flex;
   align-items: center;
