@@ -34,3 +34,18 @@ test("a folder path still lists its contents", async () => {
     await fs.rm(folder, { recursive: true, force: true });
   }
 });
+
+test("a symlink to a file is identified as a file target", async () => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), "sinder-link-path-"));
+  try {
+    const file = path.join(folder, "document");
+    const link = path.join(folder, "shortcut");
+    await fs.writeFile(file, "contents");
+    await fs.symlink(file, link);
+    const result = await listLocation(new LocalProvider(folder), link);
+    assert.equal(result.target, await fs.realpath(file));
+    assert.deepEqual(result.entries.map((entry) => entry.kind), ["file"]);
+  } finally {
+    await fs.rm(folder, { recursive: true, force: true });
+  }
+});
