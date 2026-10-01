@@ -652,6 +652,18 @@ if (primaryInstance)
         window.webContents.on("will-navigate", (event) =>
           event.preventDefault(),
         );
+        window.on("app-command", (event, command) => {
+          const direction =
+            command === "browser-backward"
+              ? "back"
+              : command === "browser-forward"
+                ? "forward"
+                : null;
+          if (direction) {
+            event.preventDefault();
+            window.webContents.send("navigation:history", direction);
+          }
+        });
         windows.add(window);
         windowOptions.set(window.id, {
           initialLocation: location,
